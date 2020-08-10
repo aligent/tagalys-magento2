@@ -8,7 +8,7 @@ class Edit extends \Magento\Backend\App\Action
     {
      return $this->_authorization->isAllowed('Tagalys_Sync::tagalys_configuration');
     }
-    
+
     /**
     * @var \Magento\Framework\View\Result\PageFactory
     */
@@ -150,14 +150,15 @@ class Edit extends \Magento\Backend\App\Action
                     break;
                 case 'Save Search Settings':
                     $this->tagalysConfiguration->setConfig('module:search:enabled', $params['enable_search']);
+                    $this->tagalysConfiguration->setConfig('stores_for_search', $params['stores_for_search'], true);
                     $this->tagalysConfiguration->setConfig('search_box_selector', $params['search_box_selector']);
                     $this->tagalysConfiguration->setConfig('suggestions_align_to_parent_selector', $params['suggestions_align_to_parent_selector']);
                     $this->tagalysApi->log('warn', 'search:enabled:'.$params['enable_search']);
                     $redirectToTab = 'search';
                     break;
                 case 'Save Listing Pages Settings':
-                    if ($params['enable_listingpages'] == '1' && $params['understand_and_agree'] == 'I agree') {
-                        $this->tagalysConfiguration->setConfig('module:listingpages:enabled', $params['enable_listingpages']);
+                    $this->tagalysConfiguration->setConfig('module:listingpages:enabled', $params['enable_listingpages']);
+                    if ($params['enable_listingpages'] != '0' && $params['understand_and_agree'] == 'I agree') {
                         $this->messageManager->addNoticeMessage("Settings have been saved. Selected categories will be visible in your Tagalys Dashboard within 10 minutes and product positions on these categories will be updated within 15 minutes unless specificed below.");
                         if (!array_key_exists('category_pages_rendering_method', $params)){
                             $params['category_pages_rendering_method'] = 'platform';
@@ -185,35 +186,41 @@ class Edit extends \Magento\Backend\App\Action
                             $originalStoreId = $this->storeManager->getStore()->getId();
                             $this->storeManager->setCurrentStore($storeId);
                             $categoryIds = array();
-                            if (count($params['categories_for_tagalys_store_'. $storeId]) > 0) {
-                                foreach($params['categories_for_tagalys_store_' . $storeId] as $categoryPath) {
-                                    $path = explode('/', $categoryPath);
-                                    $categoryIds[] = intval(end($path));
-                                }
-                                foreach ($categoryIds as $categoryId) {
-                                    try {
-                                        $category = $this->categoryRepository->get($categoryId, $storeId);
-                                        if ($this->tagalysCategoryHelper->isTagalysCreated($category)){
-                                            continue; // skip if tagalys category - we don't show them in the front-end and marked_for_deletion should not apply
-                                        }
-                                    } catch (\Exception $e) {
-                                        continue;
+                            if ($params['enable_listingpages'] == '2'){
+                                /* don't do anything here as powering all categories for all stores could take some time.
+                                    the sync cron will do it's job anyway. */
+                            } else {
+                                // CLARIFY: should we remove this check?
+                                if (count($params['categories_for_tagalys_store_'. $storeId]) > 0) {
+                                    foreach($params['categories_for_tagalys_store_' . $storeId] as $categoryPath) {
+                                        $path = explode('/', $categoryPath);
+                                        $categoryIds[] = intval(end($path));
                                     }
-                                    if ($category->getDisplayMode() == 'PAGE') {
-                                        // skip
-                                        $firstItem = $this->tagalysCategoryFactory->create()->getCollection()
-                                            ->addFieldToFilter('store_id', $storeId)
-                                            ->addFieldToFilter('category_id', $categoryId)
-                                            ->getFirstItem();
-                                        if ($id = $firstItem->getId()) {
-                                            $firstItem->addData(array('marked_for_deletion' => 1))->save();
+                                    foreach ($categoryIds as $categoryId) {
+                                        try {
+                                            $category = $this->categoryRepository->get($categoryId, $storeId);
+                                            if ($this->tagalysCategoryHelper->isTagalysCreated($category)){
+                                                continue; // skip if tagalys category - we don't show them in the front-end and marked_for_deletion should not apply
+                                            }
+                                        } catch (\Exception $e) {
+                                            continue;
                                         }
-                                    } else {
-                                        $this->tagalysCategoryHelper->createOrUpdateWithData($storeId, $categoryId, array('positions_sync_required' => 0, 'marked_for_deletion' => 0, 'status' => 'pending_sync'), array('marked_for_deletion' => 0));
+                                        if ($category->getDisplayMode() == 'PAGE') {
+                                            // skip
+                                            $firstItem = $this->tagalysCategoryFactory->create()->getCollection()
+                                                ->addFieldToFilter('store_id', $storeId)
+                                                ->addFieldToFilter('category_id', $categoryId)
+                                                ->getFirstItem();
+                                            if ($id = $firstItem->getId()) {
+                                                $firstItem->addData(array('marked_for_deletion' => 1))->save();
+                                            }
+                                        } else {
+                                            $this->tagalysCategoryHelper->markCategoryForSyncIfRequired($storeId, $categoryId);
+                                        }
                                     }
                                 }
+                                $this->tagalysCategoryHelper->markStoreCategoryIdsToDisableExcept($storeId, $categoryIds);
                             }
-                            $this->tagalysCategoryHelper->markStoreCategoryIdsForDeletionExcept($storeId, $categoryIds);
                             $this->storeManager->setCurrentStore($originalStoreId);
                         }
                         if ($params['category_pages_rendering_method'] == 'platform') {
@@ -240,7 +247,7 @@ class Edit extends \Magento\Backend\App\Action
                             $this->tagalysConfiguration->setConfig('listing_pages:override_layout_name', $params['override_layout_name_for_listing_pages']);
                         }
                     } else {
-                        if ($params['enable_listingpages'] == '1') {
+                        if ($params['enable_listingpages'] != '0') {
                             $this->messageManager->addErrorMessage("Settings have not been updated because you did not type 'I agree'.");
                         }
                         $this->tagalysConfiguration->setConfig('listing_pages:categories_via_tagalys_js_enabled', '0');
@@ -274,16 +281,15 @@ class Edit extends \Magento\Backend\App\Action
                 case 'Trigger full products resync now':
                     $triggered = true;
                     $this->tagalysApi->log('warn', 'Triggering full products resync');
-                    foreach ($this->tagalysConfiguration->getStoresForTagalys() as $storeId) {
-                        $storeTriggered = $this->tagalysSync->triggerFeedForStore($storeId, true, false, true);
-                        if (!$storeTriggered) {
-                            $triggered = false;
-                        }
-                    }
-                    if (!$triggered) {
+                    try{
+                        $this->tagalysSync->triggerFullSync();
+                    } catch (\Exception $e){
+                        $triggered = false;
                         $this->messageManager->addErrorMessage("Unable to trigger a full resync. There is already a sync in progress.");
                     }
-                    $this->queueHelper->truncate();
+                    if ($triggered){
+                        $this->queueHelper->truncate();
+                    }
                     $redirectToTab = 'support';
                     break;
                 case 'Clear Tagalys sync queue':
@@ -312,6 +318,26 @@ class Edit extends \Magento\Backend\App\Action
                     $productUpdateDetectionMethods = $this->tagalysConfiguration->setConfig('product_update_detection_methods', array('events'), true);
                     $redirectToTab = 'support';
                     break;
+                case 'Refresh Access Token':
+                    try {
+                        $this->tagalysConfiguration->deleteIntegration();
+                        $res = $this->tagalysConfiguration->syncClientConfiguration();
+                        if ($res) {
+                            if ($res['result'] === true) {
+                                $this->tagalysApi->log('warn', 'Refresh Access Token');
+                                $this->messageManager->addNoticeMessage("Successfully refreshed access tokens");
+                            } else {
+                                $message = $res['message'];
+                                $this->messageManager->addErrorMessage("Unable to save new token. Response: $message");
+                            }
+                        } else {
+                            $this->messageManager->addErrorMessage("Unable to save new token");
+                        }
+                    } catch (\Throwable $e) {
+                        $this->messageManager->addErrorMessage("Refreshing token failed. Message: {$e->getMessage()}");
+                    }
+                    $redirectToTab = 'support';
+                    break;
             }
             return $this->_redirect('tagalys/configuration/edit/active_tab/'.$redirectToTab);
         }
@@ -338,7 +364,7 @@ class Edit extends \Magento\Backend\App\Action
             $mappedStores = $this->tagalysConfiguration->getMappedStores($storeId, true);
             $categoryDetails = [];
             if ($params["smart_page_parent_category_name_store_$storeId"] == "") {
-                $categoryDetails['name'] = 'Tagalys';
+                $categoryDetails['name'] = 'Buy';
             } else {
                 $categoryDetails['name'] = $params["smart_page_parent_category_name_store_$storeId"];
             }

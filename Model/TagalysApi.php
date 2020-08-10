@@ -77,9 +77,16 @@ class TagalysApi implements TagalysManagementInterface
                     break;
                 case 'product_details':
                     $productDetails = array();
-                    foreach ($this->tagalysConfiguration->getStoresForTagalys() as $storeId) {
-                        $productDetailsForStore = (array) $this->tagalysProduct->productDetails($params['product_id'], $storeId);
-                        $productDetails['store-' . $storeId] = $productDetailsForStore;
+                    if (array_key_exists('product_id', $params)) {
+                        $params['product_ids'] = [$params['product_id']];
+                    }
+                    $stores = array_key_exists('stores', $params) ? $params['stores'] : $this->tagalysConfiguration->getStoresForTagalys();
+                    foreach ($stores as $storeId) {
+                        $productDetails['store-' . $storeId] = [];
+                        foreach($params['product_ids'] as $pid) {
+                            $productDetailsForStore = (array) $this->tagalysProduct->productDetails($pid, $storeId);
+                            $productDetails['store-' . $storeId][$pid] = $productDetailsForStore;
+                        }
                     }
                     $response = $productDetails;
                     break;
@@ -152,9 +159,8 @@ class TagalysApi implements TagalysManagementInterface
                 case 'assign_products_to_category_and_remove':
                     $this->logger->info("assign_products_to_category_and_remove: params: " . json_encode($params));
                     $async = $this->tagalysConfiguration->getConfig('listing_pages:update_position_async', true);
-                    if ($async) {
-                        $res = $this->tagalysCategoryHelper->updateWithData($params['store_id'], $params['category_id'], ['positions_sync_required' => 1]);
-                    } else {
+                    $res = $this->tagalysCategoryHelper->updateWithData($params['store_id'], $params['category_id'], ['positions_sync_required' => 1]);
+                    if (!$async) {
                         if ($params['product_positions'] == -1) {
                             $params['product_positions'] = [];
                         }
@@ -169,9 +175,8 @@ class TagalysApi implements TagalysManagementInterface
                 case 'update_product_positions':
                     $this->logger->info("update_product_positions: params: " . json_encode($params));
                     $async = $this->tagalysConfiguration->getConfig('listing_pages:update_position_async', true);
-                    if($async){
-                        $this->tagalysCategoryHelper->updateWithData($params['store_id'], $params['category_id'], ['positions_sync_required' => 1]);
-                    } else {
+                    $this->tagalysCategoryHelper->updateWithData($params['store_id'], $params['category_id'], ['positions_sync_required' => 1]);
+                    if(!$async){
                         if ($params['product_positions'] == -1) {
                             $params['product_positions'] = [];
                         }
@@ -218,7 +223,17 @@ class TagalysApi implements TagalysManagementInterface
                     $response = array('status' => 'OK', 'message' => $res);
                     break;
                 case 'update_tagalys_category_table':
-                    $this->tagalysCategoryHelper->createOrUpdateWithData($params['store_id'], $params['category_id'], $params['data']);
+                    $rows = [];
+                    if (array_key_exists('rows', $params)) {
+                        $rows = $params['rows'];
+                    } else {
+                        $rows[] = [
+                            'store_id' => $params['store_id'],
+                            'category_id' => $params['category_id'],
+                            'data' => $params['data'],
+                        ];
+                    }
+                    $this->tagalysCategoryHelper->createOrUpdateWithRows($rows);
                     $response = array('status' => 'OK', 'updated' => true);
                     break;
                 case 'get_tagalys_queue':
@@ -233,6 +248,37 @@ class TagalysApi implements TagalysManagementInterface
                     $positions = $this->tagalysCategoryHelper->getProductPosition($params['category_id']);
                     $indexPositions = $this->tagalysCategoryHelper->getProductPositionFromIndex($params['store_id'], $params['category_id']);
                     $response = array('status' => 'OK', 'positions' => $positions, 'index_positions' => $indexPositions);
+                    break;
+                case 'trigger_category_sync':
+                    if (!array_key_exists('store_id', $params)) {
+                        $params['store_id'] = false;
+                    }
+                    $res = $this->tagalysCategoryHelper->triggerCategorySync($params['store_id']);
+                    $response = ['status' => 'OK', 'updated' => $res];
+                    break;
+                case 'get_visible_attribute':
+                    $response = [
+                        'status' => 'OK',
+                        'attributes' => $this->tagalysConfiguration->getAllVisibleAttributesForAPI()
+                    ];
+                    break;
+                case 'get_all_stores':
+                    $response = [
+                        'status' => 'OK',
+                        'stores' => $this->tagalysConfiguration->getAllStoresForAPI()
+                    ];
+                    break;
+                case 'get_all_categories':
+                    if(!array_key_exists('include_tagalys_created', $params)) {
+                        $params['include_tagalys_created'] = false;
+                    }
+                    if(!array_key_exists('process_ancestry', $params)) {
+                        $params['process_ancestry'] = false;
+                    }
+                    $response = [
+                        'status' => 'OK',
+                        'stores' => $this->tagalysConfiguration->getAllCategoriesForAPI($params['store_id'], $params['include_tagalys_created'], $params['process_ancestry'])
+                    ];
                     break;
             }
         } catch (\Exception $e) {

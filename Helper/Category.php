@@ -48,7 +48,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $this->urlRewriteFactory = $urlRewriteFactory;
         $this->urlRewriteCollection = $urlRewriteCollection;
         $this->tagalysQueue = $tagalysQueue;
-        
+
         $writer = new \Zend\Log\Writer\Stream(BP . '/var/log/tagalys_categories.log');
         $this->logger = new \Zend\Log\Logger();
         $this->logger->addWriter($writer);
@@ -63,29 +63,23 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
 
     public function createOrUpdateWithData($storeId, $categoryId, $data, $updateData = null)
     {
-        if ($updateData == null) {
-            $updateData = $data;
-        }
-        $firstItem = $this->tagalysCategoryFactory->create()->getCollection()
+        $record = $this->tagalysCategoryFactory->create()->getCollection()
             ->addFieldToFilter('category_id', $categoryId)
             ->addFieldToFilter('store_id', $storeId)
             ->getFirstItem();
-
         try {
-            if ($id = $firstItem->getId()) {
-                $data['category_id'] = $categoryId;
-                $data['store_id'] = $storeId;
-                $model = $this->tagalysCategoryFactory->create()->load($id)->addData($updateData);
-                $model->setId($id)->save();
+            if ($record->getId()) {
+                if (!empty($updateData)) {
+                    $data = $updateData;
+                }
             } else {
-                $data['category_id'] = $categoryId;
-                $data['store_id'] = $storeId;
-                $model = $this->tagalysCategoryFactory->create()->setData($data);
-                $insertId = $model->save()->getId();
+                $record = $this->tagalysCategoryFactory->create();
             }
-        } catch (\Exception $e) {
-        
-        }
+            $data['category_id'] = $categoryId;
+            $data['store_id'] = $storeId;
+            $record->addData($data)->save();
+            return $record->getId();
+        } catch (\Exception $e) {}
     }
     public function updateWithData($storeId, $categoryId, $updateData)
     {
@@ -130,6 +124,18 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         }
     }
 
+    public function markStoreCategoryIdsToDisableExcept($storeId, $categoryIds){
+        $collection = $this->tagalysCategoryFactory->create()
+            ->getCollection()
+            ->addFieldToFilter('store_id', $storeId)
+            ->addFieldToFilter('category_id', ['nin' => $categoryIds]);
+        foreach ($collection as $collectionItem) {
+            if (!$this->isTagalysCreated($collectionItem->getCategoryId())) {
+                $collectionItem->setStatus('pending_disable')->save();
+            }
+        }
+    }
+
     public function isMultiStoreWarningRequired()
     {
         $allStores = $this->tagalysConfiguration->getAllWebsiteStores();
@@ -161,30 +167,30 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
     public function maintenanceSync()
     {
         // once a day
-        $listingPagesEnabled = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") == '1');
+        $listingPagesEnabled = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") != '0');
         if ($listingPagesEnabled) {
-        // 1. try and sync all failed categories - mark positions_sync_required as 1 for all failed categories - this will then try and sync the categories again
-        $failedCategories = $this->tagalysCategoryFactory->create()->getCollection()
-            ->addFieldToFilter('status', 'failed')
-            ->addFieldToFilter('marked_for_deletion', 0);
-        foreach ($failedCategories as $i => $failedCategory) {
-            $failedCategory->addData(array('status' => 'pending_sync'))->save();
-        }
-
-        // 2. if preference is to power all categories, loop through all categories and add missing items to the tagalys_core_categories table
-        // TODO
-        // 3. send all category ids to be powered by tagalys - tagalys will delete other ids
-        $storesForTagalys = $this->tagalysConfiguration->getStoresForTagalys();
-        $categoriesForTagalys = array();
-        foreach ($storesForTagalys as $key => $storeId) {
-            $categoriesForTagalys[$storeId] = array();
-            $storeCategories = $this->tagalysCategoryFactory->create()->getCollection()
-            ->addFieldToFilter('store_id', $storeId);
-            foreach ($storeCategories as $i => $storeCategory) {
-            array_push($categoriesForTagalys[$storeId], '__categories--' . $storeCategory->getCategoryId());
+            // 1. try and sync all failed categories - mark positions_sync_required as 1 for all failed categories - this will then try and sync the categories again
+            $failedCategories = $this->tagalysCategoryFactory->create()->getCollection()
+                ->addFieldToFilter('status', 'failed')
+                ->addFieldToFilter('marked_for_deletion', 0);
+            foreach ($failedCategories as $i => $failedCategory) {
+                $failedCategory->addData(array('status' => 'pending_sync'))->save();
             }
-        }
-        $this->tagalysApi->clientApiCall('/v1/mpages/_platform/verify_enabled_pages', array('enabled_pages' => $categoriesForTagalys));
+
+            // 2. if preference is to power all categories, loop through all categories and add missing items to the tagalys_core_categories table
+            // TODO
+            // 3. send all category ids to be powered by tagalys - tagalys will delete other ids
+            $storesForTagalys = $this->tagalysConfiguration->getStoresForTagalys();
+            $categoriesForTagalys = array();
+            foreach ($storesForTagalys as $key => $storeId) {
+                $categoriesForTagalys[$storeId] = array();
+                $storeCategories = $this->tagalysCategoryFactory->create()->getCollection()
+                ->addFieldToFilter('store_id', $storeId);
+                foreach ($storeCategories as $i => $storeCategory) {
+                array_push($categoriesForTagalys[$storeId], '__categories--' . $storeCategory->getCategoryId());
+                }
+            }
+            $this->tagalysApi->clientApiCall('/v1/mpages/_platform/verify_enabled_pages', array('enabled_pages' => $categoriesForTagalys));
         }
         return true;
     }
@@ -216,7 +222,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
             ->addFieldToFilter('category_id', $categoryId)
             ->getFirstItem();
         if ($id = $firstItem->getId()) {
-        $firstItem->addData(array('positions_sync_required' => 1))->save();
+            $firstItem->addData(array('positions_sync_required' => 1))->save();
         }
         return true;
     }
@@ -285,7 +291,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
 
     public function updatePositionsIfRequired($maxProductsPerCronRun = 50, $perPage = 5, $force = false) {
         $this->_registry->register("tagalys_context", true);
-        $listingPagesEnabled = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") == '1');
+        $listingPagesEnabled = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") != '0');
         if ($listingPagesEnabled || $force) {
             $pid = $this->random->getRandomString(24);
             $this->tagalysApi->log('local', '1. Started updatePositionsIfRequired', array('pid' => $pid));
@@ -334,7 +340,9 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $mappedStoreIds = $this->tagalysConfiguration->getMappedStores($storeId, true);
         foreach ($mappedStoreIds as $mappedStoreId) {
             $category = $this->categoryFactory->create()->setStoreId($mappedStoreId)->load($categoryId);
-            $category->setDefaultSortBy('position')->save();
+            if ($category->getDefaultSortBy() != 'position') {
+                $category->setDefaultSortBy('position')->save();
+            }
         }
     }
 
@@ -355,11 +363,20 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $remainingForDelete = $this->getRemainingForDelete();
         // echo('syncAll: ' . json_encode(compact('remainingForSync', 'remainingForDelete')));
         while ($remainingForSync > 0 || $remainingForDelete > 0) {
-        $this->sync(50, $force);
-        $remainingForSync = $this->getRemainingForSync();
-        $remainingForDelete = $this->getRemainingForDelete();
-        // echo('syncAll: ' . json_encode(compact('remainingForSync', 'remainingForDelete')));
+            $this->sync(50, $force);
+            $remainingForSync = $this->getRemainingForSync();
+            $remainingForDelete = $this->getRemainingForDelete();
+            // echo('syncAll: ' . json_encode(compact('remainingForSync', 'remainingForDelete')));
         }
+    }
+    public function getCategoryUrl($category) {
+        $categoryUrl = $category->getUrl();
+        $unSecureBaseUrl = $this->storeManagerInterface->getStore()->getBaseUrl(\Magento\Framework\UrlInterface::URL_TYPE_WEB, false);
+        if (strpos($categoryUrl, $unSecureBaseUrl) === 0) {
+            $secureBaseUrl = $this->storeManagerInterface->getStore()->getBaseUrl(\Magento\Framework\UrlInterface::URL_TYPE_WEB, true);
+            $categoryUrl = substr_replace($categoryUrl, $secureBaseUrl, 0, strlen($unSecureBaseUrl));
+        }
+        return $categoryUrl;
     }
     public function getStoreCategoryDetails($storeId, $categoryId) {
         try {
@@ -367,29 +384,25 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
             $this->storeManagerInterface->setCurrentStore($storeId);
             $category = null;
             $category = $this->categoryFactory->create()->load($categoryId);
-            $categoryActive = $category->getIsActive();
-            if ($categoryActive) {
-                $output = array(
-                    "id" => "__categories-$categoryId",
-                    "slug" => $category->getUrl(),
-                    "path" => $category->getUrlPath(),
-                    "enabled" => true,
-                    "name" => implode(' / ', array_slice(explode(' |>| ', $this->tagalysConfiguration->getCategoryName($category)), 1)),
-                    "filters" => array(
-                    array(
-                        "field" => "__categories",
-                        "value" => $categoryId
-                    ),
-                    array(
-                        "field" => "visibility",
-                        "tag_jsons" => array("{\"id\":\"2\",\"name\":\"Catalog\"}", "{\"id\":\"4\",\"name\":\"Catalog, Search\"}")
-                    )
-                ));
-                $this->storeManagerInterface->setCurrentStore($originalStoreId);
-                return $output;
-            }
+            $categoryActive = ($category->getIsActive() == '1');
+            $output = array(
+                "id" => "__categories-$categoryId",
+                "slug" => $this->getCategoryUrl($category),
+                "path" => $category->getUrlPath(),
+                "enabled" => $categoryActive,
+                "name" => implode(' / ', array_slice(explode(' |>| ', $this->tagalysConfiguration->getCategoryName($category)), 1)),
+                "filters" => array(
+                array(
+                    "field" => "__categories",
+                    "value" => $categoryId
+                ),
+                array(
+                    "field" => "visibility",
+                    "tag_jsons" => array("{\"id\":\"2\",\"name\":\"Catalog\"}", "{\"id\":\"4\",\"name\":\"Catalog, Search\"}")
+                )
+            ));
             $this->storeManagerInterface->setCurrentStore($originalStoreId);
-            return false;
+            return $output;
         } catch (\Exception $e) {
             return false;
         }
@@ -397,61 +410,79 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
     public function sync($max, $force = false)
     {
         $listingPagesEnabled = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") == '1');
+        $powerAllListingPages = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") == '2');
+        if($powerAllListingPages){
+            $this->powerAllCategories();
+            $listingPagesEnabled = true;
+        }
         if ($listingPagesEnabled || $force) {
-        $detailsToSync = array();
+            $detailsToSync = array();
 
-        // save
-        $categoriesToSync = $this->tagalysCategoryFactory->create()->getCollection()
-            ->addFieldToFilter('status', 'pending_sync')
-            ->addFieldToFilter('marked_for_deletion', 0)
-            ->setPageSize($max);
-        foreach ($categoriesToSync as $i => $categoryToSync) {
-            $categoryId = $categoryToSync->getCategoryId();
-            if($this->isTagalysCreated($categoryId)){
-                $categoryToSync->setStatus('powered_by_tagalys')->save();
-            } else {
-                $storeId = $categoryToSync->getStoreId();
-                $payload = $this->getStoreCategoryDetails($storeId, $categoryToSync->getCategoryId());
-                if ($payload === false) {
-                    $categoryToSync->setStatus('failed')->save();
+            // save
+            $categoriesToSync = $this->tagalysCategoryFactory->create()->getCollection()
+                ->addFieldToFilter('status', 'pending_sync')
+                ->addFieldToFilter('marked_for_deletion', 0)
+                ->setPageSize($max);
+            foreach ($categoriesToSync as $i => $categoryToSync) {
+                $categoryId = $categoryToSync->getCategoryId();
+                if($this->isTagalysCreated($categoryId)){
+                    $categoryToSync->setStatus('powered_by_tagalys')->save();
                 } else {
-                    array_push($detailsToSync, array('perform' => 'save', 'store_id' => $storeId, 'payload' => $payload));
-                }
-            }
-        }
-        // delete
-        $categoriesToDelete = $this->tagalysCategoryFactory->create()->getCollection()
-            ->addFieldToFilter('marked_for_deletion', 1)
-            ->setPageSize($max);
-        foreach ($categoriesToDelete as $i => $categoryToDelete) {
-            $storeId = $categoryToDelete->getStoreId();
-            $categoryId = $categoryToDelete->getCategoryId();
-            array_push($detailsToSync, array('perform' => 'delete', 'store_id' => $storeId, 'payload' => array('id' => "__categories-{$categoryId}")));
-        }
-
-        if (count($detailsToSync) > 0) {
-            // sync
-            $tagalysResponse = $this->tagalysApi->clientApiCall('/v1/mpages/_sync_platform_pages', array('actions' => $detailsToSync));
-
-            if ($tagalysResponse != false) {
-            foreach ($tagalysResponse['save_actions'] as $i => $saveActionResponse) {
-                $firstItem = $this->tagalysCategoryFactory->create()->getCollection()
-                ->addFieldToFilter('store_id', $saveActionResponse['store_id'])
-                ->addFieldToFilter('category_id', explode('-', $saveActionResponse['id'])[1])
-                ->getFirstItem();
-                if ($id = $firstItem->getId()) {
-                    if ($saveActionResponse['saved']) {
-                        $firstItem->addData(array('status' => 'powered_by_tagalys', 'positions_sync_required' => 1))->save();
+                    $storeId = $categoryToSync->getStoreId();
+                    $payload = $this->getStoreCategoryDetails($storeId, $categoryToSync->getCategoryId());
+                    if ($payload === false) {
+                        $categoryToSync->setStatus('failed')->save();
                     } else {
-                        $firstItem->addData(array('status' => 'failed'))->save();
+                        array_push($detailsToSync, array('perform' => 'save', 'store_id' => $storeId, 'payload' => $payload));
                     }
                 }
             }
+            // disable
+            $categoriesToDisable = $this->tagalysCategoryFactory->create()->getCollection()
+                ->addFieldToFilter('status', 'pending_disable')
+                ->addFieldToFilter('marked_for_deletion', 0)
+                ->setPageSize($max);
+            foreach ($categoriesToDisable as $i => $categoryToDisable) {
+                $storeId = $categoryToDisable->getStoreId();
+                $categoryId = $categoryToDisable->getCategoryId();
+                array_push($detailsToSync, array('perform' => 'disable', 'store_id' => $storeId, 'payload' => array('id_at_platform' => $categoryId)));
+            }
+            // delete
+            $categoriesToDelete = $this->tagalysCategoryFactory->create()->getCollection()
+                ->addFieldToFilter('marked_for_deletion', 1)
+                ->setPageSize($max);
             foreach ($categoriesToDelete as $i => $categoryToDelete) {
-                $categoryToDelete->delete();
+                $storeId = $categoryToDelete->getStoreId();
+                $categoryId = $categoryToDelete->getCategoryId();
+                array_push($detailsToSync, array('perform' => 'delete', 'store_id' => $storeId, 'payload' => array('id' => "__categories-{$categoryId}")));
             }
+
+            if (count($detailsToSync) > 0) {
+                // sync
+                $tagalysResponse = $this->tagalysApi->clientApiCall('/v1/mpages/_sync_platform_pages', array('actions' => $detailsToSync));
+
+                if ($tagalysResponse != false) {
+                    foreach ($tagalysResponse['save_actions'] as $i => $saveActionResponse) {
+                        $firstItem = $this->tagalysCategoryFactory->create()->getCollection()
+                        ->addFieldToFilter('store_id', $saveActionResponse['store_id'])
+                        ->addFieldToFilter('category_id', explode('-', $saveActionResponse['id'])[1])
+                        ->getFirstItem();
+                        if ($id = $firstItem->getId()) {
+                            if ($saveActionResponse['saved']) {
+                                $firstItem->addData(array('status' => 'powered_by_tagalys', 'positions_sync_required' => 1))->save();
+                            } else {
+                                $firstItem->addData(array('status' => 'failed'))->save();
+                            }
+                        }
+                    }
+                    foreach ($categoriesToDelete as $i => $categoryToDelete) {
+                        $categoryToDelete->delete();
+                    }
+                    foreach ($categoriesToDisable as $i => $categoryToDisable) {
+                        $categoryToDisable->delete();
+                    }
+                }
             }
-        }
         }
     }
 
@@ -500,14 +531,18 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $this->categoryLinkRepositoryInterface->save($categoryProductLink);
     }
     public function assignProductToCategoryViaDb($categoryId, $product){
-        $this->logger->info("assignProductToCategoryViaDb: {$categoryId}");
-        $conn = $this->resourceConnection->getConnection();
-        $table = $this->resourceConnection->getTableName('catalog_category_product');
-        
-        $sortDirection = $this->tagalysConfiguration->getConfig('listing_pages:position_sort_direction');
-        $positionToAssign = ($sortDirection == 'desc' ? 1 : 9999);
-        $assignData = array('category_id'=>(int)$categoryId, 'product_id'=>(int)($product->getId()), 'position' => $positionToAssign);
-        $conn->insert($table, $assignData);
+        try {
+            $this->logger->info("assignProductToCategoryViaDb: {$categoryId}");
+            $conn = $this->resourceConnection->getConnection();
+            $table = $this->resourceConnection->getTableName('catalog_category_product');
+
+            $sortDirection = $this->tagalysConfiguration->getConfig('listing_pages:position_sort_direction');
+            $positionToAssign = ($sortDirection == 'desc' ? 1 : 9999);
+            $assignData = array('category_id'=>(int)$categoryId, 'product_id'=>(int)($product->getId()), 'position' => $positionToAssign);
+            $conn->insert($table, $assignData);
+        } catch (\Throwable $e) {
+            $this->logger->err("assignProductToCategoryViaDb failed for: {$categoryId} message: {$e->getMessage()}");
+        }
     }
 
     public function uiPoweredByTagalys($storeId, $categoryId) {
@@ -530,7 +565,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
     public function pushDownProductsIfRequired($productIds, $productCategories = null, $indexerToRun = 'product') {
         // called from observers when new products are added to categories - in position ascending order, they should be positioned at the bottom of the page.
         $listingpagesEnabled = $this->tagalysConfiguration->getConfig('module:listingpages:enabled');
-        if($listingpagesEnabled == '1') {
+        if($listingpagesEnabled != '0') {
             $sortDirection = $this->tagalysConfiguration->getConfig('listing_pages:position_sort_direction');
             if($sortDirection == 'asc'){
                 $tagalysCategories = $this->getTagalysCategories($productCategories);
@@ -574,7 +609,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $tableName = $this->resourceConnection->getTableName('tagalys_category');
         $select = $conn->select()->from($tableName)->where('marked_for_deletion = ? and status != "failed"', 0);
         if($categoryIds!=null && is_array($categoryIds) && count($categoryIds) > 0 ){
-        $select->where('category_id IN (?)', $categoryIds);
+            $select->where('category_id IN (?)', $categoryIds);
         }
         $result = $conn->fetchAll($select);
         $tagalysCategories = array();
@@ -591,14 +626,14 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
             $positions = $this->reverseProductPositionsHash($positions);
         }
         $updateViaDb = $this->tagalysConfiguration->getConfig('listing_pages:update_position_via_db', true);
-        $pushDownInSetPostedProducts = $this->tagalysConfiguration->getConfig('listing_pages:push_down_in_set_posted_products', true);
-        if($updateViaDb || !$pushDownInSetPostedProducts){
-            $this->pushDownProductsViaDb($storeId, $categoryId, $positions);
+        $considerMultiStore = $this->tagalysConfiguration->getConfig('listing_pages:consider_multi_store_during_position_updates', true);
+        if($updateViaDb || $considerMultiStore){
+            $this->pushDownProductsViaDb($storeId, $categoryId, $positions, $considerMultiStore);
         }
         if ($updateViaDb){
             $this->_updatePositionsViaDb($categoryId, $positions);
         } else {
-            $this->_updatePositions($storeId, $categoryId, $positions, $pushDownInSetPostedProducts);
+            $this->_updatePositions($storeId, $categoryId, $positions, !$considerMultiStore);
         }
         $this->_setPositionSortOrder($storeId, $categoryId);
         $this->updateWithData($storeId, $categoryId, ['positions_sync_required' => 0, 'positions_synced_at' => date("Y-m-d H:i:s"), 'status' => 'powered_by_tagalys']);
@@ -636,14 +671,18 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         return true;
     }
 
-    public function pushDownProductsViaDb($storeId, $categoryId, $positions) {
+    public function pushDownProductsViaDb($storeId, $categoryId, $positions, $considerMultiStore) {
         $desc = $this->tagalysConfiguration->isProductSortingReverse();
         $indexTable = $this->getIndexTableName($storeId);
         $ccp = $this->resourceConnection->getTableName('catalog_category_product');
         $total = count($positions);
         $positionCondition = $desc ? "position >= 100" : "position <= $total";
         $pushDownPosition = $desc ? 99 : $total + 1;
-        $sql = "UPDATE $ccp SET position = $pushDownPosition WHERE category_id = $categoryId AND $positionCondition AND product_id IN (SELECT DISTINCT product_id FROM $indexTable WHERE category_id = $categoryId AND $positionCondition AND store_id = $storeId AND visibility IN (2, 4));";
+        if ($considerMultiStore) {
+            $sql = "UPDATE $ccp SET position = $pushDownPosition WHERE category_id = $categoryId AND $positionCondition AND product_id IN (SELECT DISTINCT product_id FROM $indexTable WHERE category_id = $categoryId AND $positionCondition AND store_id = $storeId AND visibility IN (2, 4));";
+        } else {
+            $sql = "UPDATE $ccp SET position = $pushDownPosition WHERE category_id = $categoryId AND $positionCondition;";
+        }
         $this->runSql($sql);
     }
 
@@ -655,7 +694,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         }
         return $reversedPositions;
     }
-    
+
     public function createTagalysParentCategory($storeId, $categoryDetails) {
         $rootCategoryId = $this->storeManagerInterface->getStore($storeId)->getRootCategoryId();
         $categoryDetails['is_active'] = false;
@@ -759,10 +798,11 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
             }
             $productPositions = $this->filterDeletedProducts($productPositions);
             $updateSmartCategoryProductsViaDb = $this->tagalysConfiguration->getConfig('listing_pages:update_smart_category_products_via_db', true);
+            $considerMultiStore = $this->tagalysConfiguration->getConfig('listing_pages:consider_multi_store_during_position_updates', true);
             if($updateSmartCategoryProductsViaDb){
-                $productsToRemove = $this->getProductsToRemove($storeId, $categoryId, $productPositions);
-                $this->_paginateSqlRemove($categoryId, $productsToRemove);
+                $productsToRemove = $this->getProductsToRemove($storeId, $categoryId, $productPositions, $considerMultiStore);
                 $this->paginateSqlInsert($categoryId, $productPositions);
+                $this->_paginateSqlRemove($categoryId, $productsToRemove);
             } else {
                 $this->categoryFactory->create()->setStoreId($storeId)->load($categoryId)->setPostedProducts($productPositions)->save();
             }
@@ -782,12 +822,17 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         return $productsHash;
     }
 
-    private function getProductsToRemove($storeId, $categoryId, $newProducts){
+    private function getProductsToRemove($storeId, $categoryId, $newProducts, $considerMultiStore){
         $productsToRemove = [];
+        $ccp = $this->resourceConnection->getTableName('catalog_category_product');
         $indexTable = $this->getIndexTableName($storeId);
-        // $sql = "SELECT DISTINCT cpe.entity_id as product_id FROM $cpe as cpe INNER JOIN $cpei as cpei ON cpe.entity_id = cpei.entity_id WHERE cpe.updated_at > '$lastUpdateAt' AND cpei.attribute_id = $attrId AND cpei.value IN (2,3,4) AND cpei.store_id IN ($stores)";
-        // use this type of query here. dont rely on index table
-        $sql = "SELECT product_id FROM $indexTable WHERE category_id = $categoryId AND store_id = $storeId AND visibility IN (2, 4); ";
+        if($considerMultiStore) {
+            // $sql = "SELECT DISTINCT cpe.entity_id as product_id FROM $cpe as cpe INNER JOIN $cpei as cpei ON cpe.entity_id = cpei.entity_id WHERE cpe.updated_at > '$lastUpdateAt' AND cpei.attribute_id = $attrId AND cpei.value IN (2,3,4) AND cpei.store_id IN ($stores)";
+            // Todo: use this type of query here. dont rely on index table
+            $sql = "SELECT product_id FROM $indexTable WHERE category_id = $categoryId AND store_id = $storeId AND visibility IN (2, 4); ";
+        } else {
+            $sql = "SELECT product_id FROM $ccp WHERE category_id = $categoryId;";
+        }
         $result = $this->runSqlSelect($sql);
         foreach ($result as $row) {
             if(!array_key_exists($row['product_id'], $newProducts)){
@@ -926,23 +971,24 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
 
     public function isTagalysCreated($category) {
         if(!is_object($category)){
-            $category = $this->categoryCollection->addAttributeToSelect('parent_id')->addAttributeToFilter('entity_id', $category)->setPage(1,1)->getFirstItem();
-            if(!$category->getId()){
-                return false;
-            }
+            $category = $this->categoryCollectionFactory->create()->addAttributeToSelect('parent_id')->addAttributeToFilter('entity_id', $category)->setPage(1,1)->getFirstItem();
         }
+        if(empty($category->getId())){
+            return false;
+        }
+        // one of the parent categories
         $parentCategories = $this->getAllTagalysParentCategories();
         if(in_array($category->getId(), $parentCategories)){
             return true;
         }
-        if($category->getId()){
-            $parentId = $category->getParentId();
-            if(in_array($parentId, $parentCategories)){
-                return true;
-            }
+        // child of a Tagalys parent category
+        $parentId = $category->getParentId();
+        if(in_array($parentId, $parentCategories)){
+            return true;
         }
+        return false;
     }
-    
+
     public function getTagalysCreatedCategories() {
         $tagalysCreated = $this->getAllTagalysParentCategories();
         $tagalysLegacyCategories = $this->tagalysConfiguration->getConfig('legacy_mpage_categories', true);
@@ -1090,5 +1136,85 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $sql = "SELECT product_id, position FROM $indexTable WHERE store_id=$storeId AND category_id=$categoryId ORDER BY position";
         $positions = $this->runSqlSelect($sql);
         return $positions;
+    }
+
+    public function powerCategoryForAllStores($category){
+        $tagalysStores = $this->tagalysConfiguration->getStoresForTagalys();
+        foreach ($tagalysStores as $storeId) {
+            if($this->tagalysConfiguration->isPrimaryStore($storeId)){
+                // Check if this category is available in this store
+                $store = $this->storeManagerInterface->getStore($storeId);
+                $storeRoot = $store->getRootCategoryId();
+                $categoryRoot = explode('/', $category->getPath())[1];
+                if($storeRoot == $categoryRoot){
+                    // We do this even for disabled categories as the disabled categories will be marked as failed on sync and will be retried periodically during maintenance
+                    $this->createOrUpdateWithData($storeId, $category->getId(), ['positions_sync_required' => 0, 'marked_for_deletion' => 0, 'status' => 'pending_sync']);
+                }
+            }
+        }
+    }
+
+    public function powerAllCategoriesForStore($storeId){
+        $categories = $this->tagalysConfiguration->getAllCategories($storeId);
+        $storeRoot = $this->storeManagerInterface->getStore($storeId)->getRootCategoryId();
+        foreach ($categories as $category) {
+            $path = explode('/',$category['value']);
+            if(in_array($storeRoot, $path) && $category['static_block_only'] == false){
+                $categoryId = end($path);
+                $this->markCategoryForSyncIfRequired($storeId, $categoryId);
+            }
+        }
+    }
+
+    public function powerAllCategories(){
+        $storesForTagalys = $this->tagalysConfiguration->getStoresForTagalys();
+        foreach($storesForTagalys as $storeId){
+            if ($this->tagalysConfiguration->isPrimaryStore($storeId)){
+                $this->powerAllCategoriesForStore($storeId);
+            }
+        }
+    }
+
+    public function markCategoryForSyncIfRequired($storeId, $categoryId) {
+        $firstItem = $this->tagalysCategoryFactory->create()->getCollection()
+            ->addFieldToFilter('category_id', $categoryId)
+            ->addFieldToFilter('store_id', $storeId)
+            ->getFirstItem();
+        if ($firstItem->getId()) {
+            $firstItem->setMarkedForDeletion(0);
+            if ($firstItem->getStatus() == 'pending_disable') {
+                $firstItem->setStatus('pending_sync');
+            }
+        } else {
+            $firstItem = $this->tagalysCategoryFactory->create();
+            $firstItem->setData([
+                'store_id' => $storeId,
+                'category_id' => $categoryId,
+                'positions_sync_required' => 0,
+                'marked_for_deletion' => 0,
+                'status' => 'pending_sync'
+            ]);
+        }
+        $firstItem->save();
+    }
+
+    public function triggerCategorySync($storeId = false){
+        $collection = $this->tagalysCategoryFactory->create()->getCollection();
+        if($storeId){
+            $collection->addFieldToFilter('store_id', $storeId);
+        }
+        foreach ($collection as $tagalysCategory) {
+            if (!$this->isTagalysCreated($tagalysCategory->getCategoryId())) {
+                $tagalysCategory->setStatus('pending_sync')->save();
+            }
+        }
+        return $collection->count();
+    }
+
+    public function createOrUpdateWithRows($rows) {
+        foreach($rows as $row) {
+            $updateData = array_key_exists('update_data', $row) ? $row['update_data'] : false;
+            $this->createOrUpdateWithData($row['store_id'], $row['category_id'], $row['data'], $updateData);
+        }
     }
 }

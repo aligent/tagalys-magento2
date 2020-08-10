@@ -89,8 +89,7 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
     }
 
     public function getProductsCount($storeId) {
-        // TODO: does this run a count query or does it actually retrieve all products? compare with getSize()
-        return $this->_getCollection($storeId, 'feed')->count();
+        return $this->_getCollection($storeId, 'feed')->getSize();
     }
 
     public function _getCollection($storeId, $type, $productIdsFromUpdatesQueueForCronInstance = array()) {
@@ -114,12 +113,15 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
             $periodic_full_sync = $this->tagalysConfiguration->getConfig("periodic_full_sync");
             $resync_required = $this->tagalysConfiguration->getConfig("store:$storeId:resync_required");
             if ($periodic_full_sync == '1' || $resync_required == '1' || $force) {
+                $this->queueHelper->truncate();
+                $this->deleteSyncFiles();
                 $syncTypes = array('updates', 'feed');
                 foreach ($syncTypes as $syncType) {
-                  $syncTypeStatus = $this->tagalysConfiguration->getConfig("store:$storeId:" . $syncType . "_status", true);
-                  $syncTypeStatus['status'] = 'finished';
-                  $this->tagalysConfiguration->setConfig("store:$storeId:" . $syncType . "_status", $syncTypeStatus, true);
+                    $syncTypeStatus = $this->tagalysConfiguration->getConfig("store:$storeId:" . $syncType . "_status", true);
+                    $syncTypeStatus['status'] = 'finished';
+                    $this->tagalysConfiguration->setConfig("store:$storeId:" . $syncType . "_status", $syncTypeStatus, true);
                 }
+                $this->tagalysConfiguration->setConfig("config_sync_required", '1');
                 $this->triggerFeedForStore($storeId, false, false, true);
                 $this->tagalysConfiguration->setConfig("store:$storeId:resync_required", '0');
             }
@@ -592,9 +594,9 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
         $syncStatus['stores'] = array();
         foreach ($this->tagalysConfiguration->getStoresForTagalys() as $key => $storeId) {
             $thisStore = array();
-            
+
             $thisStore['name'] = $this->storeManager->getStore($storeId)->getName();
-            
+
             $storeSetupComplete = $this->tagalysConfiguration->getConfig("store:$storeId:setup_complete");
             $thisStore['setup_complete'] = ($storeSetupComplete == '1');
 
@@ -630,8 +632,12 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
                     }
                 }
                 if ($statusForClient == 'Writing to file' || $statusForClient == 'Waiting to write to file') {
-                    $completed_percentage = round(((int)$storeFeedStatus['completed_count'] / (int)$storeFeedStatus['products_count']) * 100, 2);
-                    $statusForClient = $statusForClient . ' (completed '.$completed_percentage.'%)';
+                    if ((int)$storeFeedStatus['products_count'] == 0){
+                        $statusForClient = $statusForClient . ' (completed 100%)';
+                    } else {
+                        $completed_percentage = round(((int)$storeFeedStatus['completed_count'] / (int)$storeFeedStatus['products_count']) * 100, 2);
+                        $statusForClient = $statusForClient . ' (completed '.$completed_percentage.'%)';
+                    }
                 }
                 $thisStore['feed_status'] = $statusForClient;
             } else {
@@ -674,7 +680,7 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
             // categories
             $listingPagesEnabled = $this->tagalysConfiguration->getConfig("module:listingpages:enabled");
             $totalEnabled = $this->tagalysCategory->getEnabledCount($storeId);
-            if ($listingPagesEnabled == '1' && $totalEnabled > 0) {
+            if ($listingPagesEnabled != '0' && $totalEnabled > 0) {
                 $pendingSync = $this->tagalysCategory->getPendingSyncCount($storeId);
                 $requiringPositionsSync = $this->tagalysCategory->getRequiringPositionsSyncCount($storeId);
                 $listingPagesStatusMessages = array();
@@ -742,27 +748,63 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
             $orders->addAttributeToFilter('created_at', ['to' => $to]);
         }
         $data = [];
+        $successStates = $this->tagalysConfiguration->getConfig('success_order_states', true);
         foreach($orders as $order){
-            $items = $order->getAllVisibleItems();
-            foreach($items as $item){
-                $data[] = [
-                    'order_id' => $order->getId(),
-                    'item_sku' => $item->getSku(),
-                    'product_sku' => $item->getProduct()->getSku(),
-                    'qty' => $item->getQtyOrdered(),
-                    'user_id' => $order->getCustomerId(),
-                    'timestamp' => $order->getCreatedAt(),
-                ];
+            if (in_array($order->getState(), $successStates)) {
+                $items = $order->getAllVisibleItems();
+                foreach($items as $item){
+                    $product = $item->getProduct();
+                    if(is_null($product)){
+                        continue;
+                    }
+                    $data[] = [
+                        'order_id' => $order->getId(),
+                        'order_status' => $order->getStatus(),
+                        'order_state' => $order->getState(),
+                        'item_sku' => $item->getSku(),
+                        'product_sku' => $product->getSku(),
+                        'qty' => $item->getQtyOrdered(),
+                        'user_id' => $order->getCustomerId(),
+                        'timestamp' => $order->getCreatedAt(),
+                    ];
+                }
             }
         }
         return $data;
     }
 
     public function reindexProductsForUpdate($productIds){
+        /*
+            In certain cases (flat_products enabled maybe?), when a new product is created the product update for that product ID will come as 'product delete'
+            If that happens, enable sync:reindex_products_before_updates
+        */
         $reindexBeforeUpdate = $this->tagalysConfiguration->getConfig('sync:reindex_products_before_updates', true);
         if($reindexBeforeUpdate && count($productIds) > 0){
             $this->indexerFactory->create()->load('cataloginventory_stock')->reindexList($productIds);
             $this->indexerFactory->create()->load('catalog_product_price')->reindexList($productIds);
+        }
+    }
+
+    public function deleteSyncFiles() {
+        $mediaDirectory = $this->filesystem->getDirectoryRead('media')->getAbsolutePath('tagalys');
+        $filesInMediaDirectory = scandir($mediaDirectory);
+        foreach ($filesInMediaDirectory as $key => $value) {
+            if (!is_dir($mediaDirectory . DIRECTORY_SEPARATOR . $value)) {
+                if (!preg_match("/^\./", $value)) {
+                    if (substr($value, 0, 8) == 'syncfile'){
+                        try {
+                            unlink($mediaDirectory . DIRECTORY_SEPARATOR . $value);
+                        } catch (\Exception $e) { }
+                    }
+                }
+            }
+        }
+    }
+
+    public function triggerFullSync(){
+        $this->tagalysConfiguration->setConfig("config_sync_required", '1');
+        foreach ($this->tagalysConfiguration->getStoresForTagalys() as $storeId) {
+            $this->triggerFeedForStore($storeId, true, false, true);
         }
     }
 }
