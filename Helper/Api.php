@@ -6,20 +6,22 @@ class Api extends \Magento\Framework\App\Helper\AbstractHelper
     public function __construct(
         \Magento\Framework\App\ProductMetadataInterface $productMetadataInterface,
         \Magento\Framework\Module\ModuleListInterface $moduleListInterface,
-        \Tagalys\Sync\Model\ConfigFactory $configFactory
+        \Tagalys\Sync\Model\ConfigFactory $configFactory,
+        \Magento\Store\Model\StoreManagerInterface $storeManager
     )
     {
         $this->timeout = 60;
         $this->productMetadataInterface = $productMetadataInterface;
         $this->moduleListInterface = $moduleListInterface;
         $this->configFactory = $configFactory;
+        $this->storeManager = $storeManager;
 
         $writer = new \Zend\Log\Writer\Stream(BP . '/var/log/tagalys_log.log');
         $this->tagalysLogger = new \Zend\Log\Logger();
         $this->tagalysLogger->addWriter($writer);
 
-        $this->pluginVersion = '2.0.17';
-        
+        $this->pluginVersion = '2.1.2';
+
         $this->cacheApiCredentials();
     }
 
@@ -82,11 +84,14 @@ class Api extends \Magento\Framework\App\Helper\AbstractHelper
         );
         return $this->_apiCall($path, $params);
     }
-    public function storeApiCall($storeId, $path, $params) {
+    public function storeApiCall($storeId, $path, $params = []) {
+        $storeUrl = $this->storeManager->getStore($storeId)->getBaseUrl(\Magento\Framework\UrlInterface::URL_TYPE_WEB, true);
+        $storeDomain = parse_url($storeUrl)['host'];
         $params['identification'] = array(
             'client_code' => $this->clientCode,
             'api_key' => $this->privateApiKey,
-            'store_id' => $storeId
+            'store_id' => $storeId,
+            'domain' => $storeDomain
         );
         return $this->_apiCall($path, $params);
     }

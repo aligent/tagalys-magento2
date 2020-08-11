@@ -4,6 +4,16 @@ namespace Tagalys\Sync\Helper;
 class Product extends \Magento\Framework\App\Helper\AbstractHelper
 {
     private $productsToReindex = array();
+    /**
+     * @param \Magento\Framework\App\ResourceConnection
+     */
+    private $resourceConnection;
+
+    /**
+     * @param \Tagalys\Sync\Helper\Configuration
+     */
+    private $tagalysConfiguration;
+
     public function __construct(
         \Magento\Catalog\Model\ProductFactory $productFactory,
         \Magento\ConfigurableProduct\Api\LinkManagementInterface $linkManagement,
@@ -26,7 +36,11 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         \Magento\Catalog\Model\Product\Attribute\Repository $productAttributeRepository,
         \Magento\Framework\Event\Manager $eventManager,
         \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry,
-        \Magento\CatalogInventory\Api\StockRegistryInterface $stockRegistry
+        \Magento\CatalogInventory\Api\StockRegistryInterface $stockRegistry,
+        \Magento\Framework\Pricing\PriceCurrencyInterface $priceCurrency,
+        \Magento\Framework\App\ProductMetadataInterface $productMetadata,
+        \Magento\ConfigurableProduct\Model\Product\Type\Configurable $configurableProduct,
+        \Magento\Framework\App\ResourceConnection $resourceConnection
     )
     {
         $this->productFactory = $productFactory;
@@ -51,6 +65,10 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         $this->eventManager = $eventManager;
         $this->indexerRegistry = $indexerRegistry;
         $this->stockRegistry = $stockRegistry;
+        $this->priceCurrency = $priceCurrency;
+        $this->productMetadata = $productMetadata;
+        $this->configurableProduct = $configurableProduct;
+        $this->resourceConnection = $resourceConnection;
     }
 
     public function getPlaceholderImageUrl($imageAttributeCode, $allowPlaceholder) {
@@ -80,7 +98,10 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
                         // $resizedProductImagePath = $this->directoryList->getPath('media') . DIRECTORY_SEPARATOR . 'tagalys' . DIRECTORY_SEPARATOR . 'product_thumbnails' . $productImagePath;
                         if ($forceRegenerateThumbnail || !file_exists($resizedProductImagePath)) {
                             if (file_exists($resizedProductImagePath)) {
-                                unlink($resizedProductImagePath);
+                                try{
+                                    unlink($resizedProductImagePath);
+                                } catch(\Exception $e){
+                                }
                             }
                             $imageResize = $this->imageFactory->create();
                             $imageResize->open($baseProductImagePath);
@@ -118,19 +139,19 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
                 return $el['attribute_code'];
             }, $product->getTypeInstance(true)->getConfigurableAttributesAsArray($product));
         }
+        $storeId = $this->storeManager->getStore()->getId();
+        $whitelistedAttributes = $this->tagalysConfiguration->getConfig('sync:whitelisted_product_attributes', true);
         foreach ($attributes as $attribute) {
-            if (!in_array($attribute->getAttributeCode(), $attributesToIgnore)) {
-                $isWhitelisted = false;
-                if ((bool)$attribute->getIsUserDefined() == false && in_array($attribute->getAttributeCode(), array('url_key'))) {
-                    $isWhitelisted = true;
-                }
-                $isForDisplay = ((bool)$attribute->getUsedInProductListing() && (bool)$attribute->getIsUserDefined());
-                if ($attribute->getIsFilterable() || $attribute->getIsSearchable() || $isForDisplay || $isWhitelisted) {
-
-                    if (!in_array($attribute->getAttributeCode(), array('status', 'tax_class_id')) && $attribute->getFrontendInput() != 'multiselect') {
+            if($this->tagalysConfiguration->isAttributeField($attribute)) {
+                $shouldSyncAttribute = $this->tagalysConfiguration->shouldSyncAttribute($attribute, $whitelistedAttributes, $attributesToIgnore);
+                if($shouldSyncAttribute) {
+                    $isBoolean = $attribute->getFrontendInput() == 'boolean';
+                    if($isBoolean) {
+                        $productFields[$attribute->getAttributeCode()] = $this->getBooleanAttributeValue($storeId, $product, $attribute);
+                    } else {
                         $attributeValue = $attribute->getFrontend()->getValue($product);
                         if (!is_null($attributeValue)) {
-                            if ($attribute->getFrontendInput() == 'boolean') {
+                            if ($isBoolean) {
                                 $productFields[$attribute->getAttributeCode()] = ($attributeValue == 'Yes');
                             } else {
                                 $productFields[$attribute->getAttributeCode()] = $attributeValue;
@@ -143,6 +164,29 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         return $productFields;
     }
 
+    public function getBooleanAttributeValue($storeId, $product, $attribute) {
+        $readBooleanValuesViaDb = $this->tagalysConfiguration->getConfig('sync:read_boolean_attributes_via_db', true);
+        if($readBooleanValuesViaDb) {
+            return $this->getBooleanAttributeValueViaDb($storeId, $product->getId(), $attribute->getAttributeId());
+        }
+        $newMethod = $this->tagalysConfiguration->getConfig('temp:read_boolean_attributes_with_new_method', true);
+        if($newMethod) {
+            $attributeValue = $product->getAttributeText($attribute->getAttributeCode());
+        } else {
+            $attributeValue = $attribute->getFrontend()->getValue($product);
+        }
+        return ($attributeValue == 'Yes');
+    }
+
+    public function getBooleanAttributeValueViaDb($storeId, $productId, $attributeId) {
+        $cpe = $this->resourceConnection->getTableName('catalog_product_entity');
+        $cpei = $this->resourceConnection->getTableName('catalog_product_entity_int');
+        $columnToJoin = $this->tagalysConfiguration->getResourceColumnToJoin();
+        $sql = "SELECT * FROM $cpei AS cpei INNER JOIN $cpe AS cpe ON cpe.{$columnToJoin} = cpei.{$columnToJoin} WHERE cpe.entity_id = $productId AND cpei.attribute_id = $attributeId AND cpei.store_id IN (0, $storeId) ORDER BY cpei.store_id DESC";
+        $rows = $this->runSqlSelect($sql);
+        return (count($rows) > 0 && $rows[0]['value'] == '1');
+    }
+
     public function getDirectProductTags($product, $storeId) {
         $productTags = array();
 
@@ -151,15 +195,12 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
 
         // other attributes
         $attributes = $product->getTypeInstance()->getEditableAttributes($product);
+        $whitelistedAttributes = $this->tagalysConfiguration->getConfig('sync:whitelisted_product_attributes', true);
         foreach ($attributes as $attribute) {
-            $isWhitelisted = false;
-            if ((bool)$attribute->getIsUserDefined() == false && in_array($attribute->getAttributecode(), array('visibility'))) {
-                $isWhitelisted = true;
-            }
-            $isForDisplay = ((bool)$attribute->getUsedInProductListing() && (bool)$attribute->getIsUserDefined());
-            if (!in_array($attribute->getAttributeCode(), array('status', 'tax_class_id')) && !in_array($attribute->getFrontendInput(), array('boolean')) && ($attribute->getIsFilterable() || $attribute->getIsSearchable() || $isForDisplay || $isWhitelisted)) {
-                $productAttribute = $product->getResource()->getAttribute($attribute->getAttributeCode());
-                if ($productAttribute->usesSource()) {
+            if($this->tagalysConfiguration->isAttributeTagSet($attribute)) {
+                $shouldSyncAttribute = $this->tagalysConfiguration->shouldSyncAttribute($attribute, $whitelistedAttributes);
+                if ($shouldSyncAttribute) {
+                    $productAttribute = $product->getResource()->getAttribute($attribute->getAttributeCode());
                     // select, multi-select
                     $fieldType = $productAttribute->getFrontendInput();
                     $items = array();
@@ -256,7 +297,7 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
             if ($category->getIsActive()) {
                 $path = $category->getPath();
                 $activeCategoryPaths[] = $path;
-                
+
                 // assign to parent categories
                 $relevantCategories = array_slice(explode('/', $path), 2); // ignore level 0 and 1
                 $idsToAssign = array_diff($relevantCategories, $categoryIds);
@@ -272,8 +313,13 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
             array_push($this->productsToReindex, $product->getId());
         }
         $activeCategoriesTree = array();
+        $rootCategoryId = $this->storeManager->getStore()->getRootCategoryId();
         foreach($activeCategoryPaths as $activeCategoryPath) {
             $pathIds = explode('/', $activeCategoryPath);
+            if(!in_array($rootCategoryId, $pathIds)) {
+                // skip the categories which are not under the root category of this store
+                continue;
+            }
             // skip the first two levels which are 'Root Catalog' and the Store's root
             $pathIds = array_splice($pathIds, 2);
             if (count($pathIds) > 0) {
@@ -343,7 +389,7 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         $totalAssociatedProducts = 0;
         $productForPrice = $product;
         $minSalePrice = PHP_INT_MAX;
-        
+
         $configurableAttributes = array_map(function ($el) {
             return $el['attribute_code'];
         }, $product->getTypeInstance(true)->getConfigurableAttributesAsArray($product));
@@ -352,6 +398,7 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         foreach($associatedProducts as $p){
             $ids[]=$p->getId();
         }
+        // potential optimization: why are we querying the products again through a collection if linkManagement already returns product objects.
         $associatedProducts = $this->productFactory->create()->getCollection()
             ->setStoreId($storeId)
             ->addStoreFilter($storeId)
@@ -362,21 +409,19 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
 
         $tagItems = array();
         $hash = array();
-        
         foreach($associatedProducts as $associatedProduct){
             $totalAssociatedProducts += 1;
-            $stockItem = $this->stockRegistry->getStockItem($associatedProduct->getId());
-            $isInStock = $stockItem->getIsInStock();
-            
+            $inventoryDetails = $this->getSimpleProductInventoryDetails($associatedProduct);
+
             // Getting tag sets
-            if ($isInStock) {
+            if ($inventoryDetails['in_stock']) {
                 $anyAssociatedProductInStock = true;
                 $salePrice = $associatedProduct->getPriceInfo()->getPrice('final_price')->getAmount()->getValue();
                 if($minSalePrice > $salePrice) {
                     $minSalePrice = $salePrice;
                     $productForPrice = $associatedProduct;
                 }
-                $totalInventory += (int)$stockItem->getQty();
+                $totalInventory += $inventoryDetails['qty'];
                 foreach($configurableAttributes as $configurableAttribute) {
                     $id = $associatedProduct->getData($configurableAttribute);
                     if(!isset($hash[$id])) {
@@ -407,7 +452,7 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         }
 
         $productDetails['in_stock'] = $anyAssociatedProductInStock;
-        
+
         // Reformat tag sets
         foreach($tagItems as $configurableAttribute => $items){
             array_push($productDetails['__tags'], array("tag_set" => array("id" => $configurableAttribute, "label" => $product->getResource()->getAttribute($configurableAttribute)->getStoreLabel($storeId)), "items" => $items));
@@ -416,8 +461,19 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
     }
 
     public function productDetails($product, $storeId, $forceRegenerateThumbnail = false) {
+        if (!is_object($product)) {
+            $product = $this->productFactory->create()->setStoreId($storeId)->load($product);
+        }
         $originalStoreId = $this->storeManager->getStore()->getId();
+        $originalCurrency = $this->storeManager->getStore()->getCurrentCurrencyCode();
         $this->storeManager->setCurrentStore($storeId);
+        $store = $this->storeManager->getStore();
+        $baseCurrency = $store->getBaseCurrencyCode();
+        $allowedCurrencies = $store->getAvailableCurrencies(true);
+        $baseCurrencyNotAllowed = ($allowedCurrencies==null || !in_array($baseCurrency, $allowedCurrencies));
+        $useNewMethodToGetPriceValues = $this->tagalysConfiguration->getConfig('sync:use_get_final_price_for_sale_price', true);
+        $store->setCurrentCurrencyCode($baseCurrency);
+        // FIXME: stockRegistry deprecated
         $stockItem = $this->stockRegistry->getStockItem($product->getId());
         $productForPrice = $product;
         $productDetails = array(
@@ -428,15 +484,17 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
             'sku' => $product->getSku(),
             'scheduled_updates' => array(),
             'introduced_at' => date(\DateTime::ATOM, strtotime($product->getCreatedAt())),
+            // potential optimization: the below line doesn't need to run for configurable products
             'in_stock' => $stockItem->getIsInStock(),
             'image_url' => $this->getProductImageUrl($storeId, $this->tagalysConfiguration->getConfig('product_image_attribute'), true, $product, $forceRegenerateThumbnail),
             '__tags' => $this->getDirectProductTags($product, $storeId)
         );
 
         if ($productDetails['__magento_type'] == 'simple') {
-            $inventory = (int)$stockItem->getQty();
-            $productDetails['__inventory_total'] = $inventory;
-            $productDetails['__inventory_average'] = $inventory;
+            $inventoryDetails = $this->getSimpleProductInventoryDetails($product, $stockItem);
+            $productDetails['in_stock'] = $inventoryDetails['in_stock'];
+            $productDetails['__inventory_total'] = $inventoryDetails['qty'];
+            $productDetails['__inventory_average'] = $inventoryDetails['qty'];
         }
 
         if ($productDetails['__magento_type'] == 'configurable') {
@@ -464,13 +522,24 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
 
         // prices and sale price from/to
         if ($product->getTypeId() == 'bundle') {
+            // already returning price in base currency. no conversion needed.
             $productDetails['price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
             $productDetails['sale_price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
         } else {
-            // https://magento.stackexchange.com/a/152692/80853
-            $productDetails['price'] = $productForPrice->getPriceInfo()->getPrice('regular_price')->getAmount()->getValue();
-            $productDetails['sale_price'] = $productForPrice->getPriceInfo()->getPrice('final_price')->getAmount()->getValue();
-            // ___
+            if($useNewMethodToGetPriceValues){
+                // returns values in base currency. Includes the catalog price rule and special price.
+                $productDetails['price'] = $productForPrice->getPrice();
+                $productDetails['sale_price'] = $productForPrice->getFinalPrice();
+            } else {
+                // https://magento.stackexchange.com/a/152692/80853
+                // returns values in current currency (set to base currency if base is in allowed currencies).
+                $productDetails['price'] = $productForPrice->getPriceInfo()->getPrice('regular_price')->getAmount()->getValue();
+                $productDetails['sale_price'] = $productForPrice->getPriceInfo()->getPrice('final_price')->getAmount()->getValue();
+                if($baseCurrencyNotAllowed){
+                    $productDetails['price'] = $this->getPriceInBaseCurrency($productDetails['price']);
+                    $productDetails['sale_price'] = $this->getPriceInBaseCurrency($productDetails['sale_price']);
+                }
+            }
             /** Changing productForPrices->product (check if works) */
             if ($productForPrice->getSpecialFromDate() != null) {
                 $specialPriceFromDatetime = new \DateTime($productForPrice->getSpecialFromDate(), new \DateTimeZone($this->timezoneInterface->getConfigTimezone()));
@@ -491,8 +560,11 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
                     // future sale - record other sale price and from/to datetimes
                     $specialPrice = $productForPrice->getSpecialPrice();
                     if ($specialPrice != null && $specialPrice > 0) {
+                        if($baseCurrencyNotAllowed){
+                            $specialPrice = $this->getPriceInBaseCurrency($specialPrice);
+                        }
                         $specialPriceFromDatetime = new \DateTime($productForPrice->getSpecialFromDate(), new \DateTimeZone($this->timezoneInterface->getConfigTimezone()));
-                        array_push($productDetails['scheduled_updates'], array('at' => $specialPriceFromDatetime->format('Y-m-d H:i:sP'), 'updates' => array('sale_price' => $productForPrice->getSpecialPrice())));
+                        array_push($productDetails['scheduled_updates'], array('at' => $specialPriceFromDatetime->format('Y-m-d H:i:sP'), 'updates' => array('sale_price' => $specialPrice)));
                         if ($productForPrice->getSpecialToDate() != null) {
                             $specialPriceToDatetime = new \DateTime($productForPrice->getSpecialToDate(), new \DateTimeZone($this->timezoneInterface->getConfigTimezone()));
                             array_push($productDetails['scheduled_updates'], array('at' => str_replace('00:00:00', '23:59:59', $specialPriceToDatetime->format('Y-m-d H:i:sP')), 'updates' => array('sale_price' => $productDetails['price'])));
@@ -548,7 +620,128 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         $productDetails = $productDetailsObj->getProductDetails();
 
         $this->storeManager->setCurrentStore($originalStoreId);
+        $this->storeManager->getStore()->setCurrentCurrencyCode($originalCurrency);
 
         return $productDetails;
     }
+
+    public function getPriceInBaseCurrency($amount, $store = null){
+        if(!isset($store)){
+            $store = $this->storeManager->getStore();
+        }
+        // cannot use $store->getCurrentCurrency()->convert() because magento does not support converting from currency X to base currency.
+        $rate = $store->getCurrentCurrencyRate();
+        $amount = $amount / $rate;
+        return $amount;
+    }
+
+    public function getSimpleProductInventoryDetails($product, $stockItem = false) {
+        if($product->getTypeId() == 'simple' || $product->getTypeId() == 'virtual') {
+            $magentoVersion = $this->productMetadata->getVersion();
+            $msiUsed = $this->tagalysConfiguration->getConfig('sync:multi_source_inventory_used', true);
+            if(version_compare($magentoVersion, '2.3.0', '>=') && $msiUsed) {
+                // only do this if MSI is used, coz the else part will work for non MSI stores and is faster too.
+                $websiteCode = $this->storeManager->getWebsite()->getCode();
+                $stockResolver = Configuration::getInstanceOf("\Magento\InventorySalesApi\Api\StockResolverInterface");
+                $isProductSalableInterface = Configuration::getInstanceOf("\Magento\InventorySalesApi\Api\IsProductSalableInterface");
+                $getProductSalableQty = Configuration::getInstanceOf("\Magento\InventorySalesApi\Api\GetProductSalableQtyInterface");
+                $stockId = $stockResolver->execute(\Magento\InventorySalesApi\Api\Data\SalesChannelInterface::TYPE_WEBSITE, $websiteCode)->getStockId();
+
+                $stockQty = $getProductSalableQty->execute($product->getSku(), $stockId);
+                $inStock = $isProductSalableInterface->execute($product->getSku(), $stockId);
+            } else {
+                if($stockItem == false) {
+                    $stockItem = $this->stockRegistry->getStockItem($product->getId());
+                }
+                $stockQty = $stockItem->getQty();
+                $inStock = $stockItem->getIsInStock();
+            }
+            return [
+                'in_stock' => $inStock,
+                'qty' => (int)$stockQty
+            ];
+        }
+        return false;
+    }
+
+    // called while getting product details during "add to cart" or "buy", from Details.php
+    public function getAssociatedProductToTrack($product) {
+        if($this->isProductVisible($product)) {
+            return $product;
+        }
+        $parentProduct = $this->getConfigurableParent($product);
+        if($parentProduct) {
+            $mainConfigurableAttribute = $this->tagalysConfiguration->getConfig('analytics:main_configurable_attribute');
+            if(!empty($mainConfigurableAttribute)) {
+                // If associated simple products are visible individually, find which one is visible and return that
+                $siblings = $this->getVisibleChildren($parentProduct);
+                if(count($siblings) > 0) {
+                    foreach($siblings as $sibling) {
+                        if($sibling->getData($mainConfigurableAttribute) == $product->getData($mainConfigurableAttribute)) {
+                            return $sibling;
+                        }
+                    }
+                    return $siblings[0];
+                }
+            }
+            // only the configurable products are visible in the front-end, so return that
+            return $parentProduct;
+        }
+        return $product;
+    }
+
+    public function getVisibleChildren($parent) {
+        $visibleChildren = [];
+        if($parent->getTypeId() == 'configurable') {
+            $children = $this->linkManagement->getChildren($parent->getSku());
+            foreach($children as $child) {
+                if($this->isProductVisible($child)) {
+                    $visibleChildren[] = $child;
+                }
+            }
+        }
+        return $visibleChildren;
+    }
+
+    public function getConfigurableParent($child) {
+        $parentIds = $this->configurableProduct->getParentIdsByChild($child->getId());
+        if(count($parentIds) > 0) {
+            return $this->productFactory->create()->load($parentIds[0]);
+        }
+        return false;
+    }
+
+    public function isProductVisible($product) {
+        return ($product->getVisibility() != 1);
+    }
+
+    private function runSql($sql){
+        $conn = $this->resourceConnection->getConnection();
+        return $conn->query($sql);
+    }
+
+    private function runSqlSelect($sql){
+        $conn = $this->resourceConnection->getConnection();
+        return $conn->fetchAll($sql);
+    }
+
+    public function getBooleanAttrValueForAPI($storeId, $productId){
+        $product = $this->productFactory->create()->load($storeId, $productId);
+        return $this->tagalysConfiguration->processInStoreContext($storeId, function() use($storeId, $product) {
+            $attributes = $product->getTypeInstance()->getEditableAttributes($product);
+            $attributeValue = [];
+            foreach ($attributes as $attribute) {
+                $shouldSyncAttribute = $this->tagalysConfiguration->shouldSyncAttribute($attribute);
+                if ($shouldSyncAttribute && $attribute->getFrontendInput() == 'boolean') {
+                    $attributeValue[$attribute->getAttributeCode()] = [
+                        $attribute->getFrontend()->getValue($product),
+                        $product->getAttributeText($attribute->getAttributeCode()),
+                        $this->getBooleanAttributeValueViaDb($storeId, $product->getId(), $attribute->getAttributeId())
+                    ];
+                }
+            }
+            return $attributeValue;
+        });
+    }
+
 }

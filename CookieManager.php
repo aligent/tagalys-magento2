@@ -1,4 +1,4 @@
-<?php 
+<?php
 
 namespace Tagalys\Sync;
 
@@ -22,6 +22,11 @@ class CookieManager
     private $sessionManager;
 
     /**
+     * @param \Magento\Store\Model\StoreManagerInterface
+     */
+    private $storeManager;
+
+    /**
      * @param CookieManagerInterface $cookieManager
      * @param CookieMetadataFactory $cookieMetadataFactory
      * @param SessionManagerInterface $sessionManager
@@ -29,11 +34,13 @@ class CookieManager
     public function __construct(
         \Magento\Framework\Stdlib\CookieManagerInterface $cookieManager,
         \Magento\Framework\Stdlib\Cookie\CookieMetadataFactory $cookieMetadataFactory,
-        \Magento\Framework\Session\SessionManagerInterface $sessionManager
+        \Magento\Framework\Session\SessionManagerInterface $sessionManager,
+        \Magento\Store\Model\StoreManagerInterface $storeManager
     ) {
         $this->cookieManager = $cookieManager;
         $this->cookieMetadataFactory = $cookieMetadataFactory;
         $this->sessionManager = $sessionManager;
+        $this->storeManager = $storeManager;
     }
 
     /**
@@ -56,7 +63,8 @@ class CookieManager
         $metadata = $this->cookieMetadataFactory
           ->createPublicCookieMetadata()
           ->setDuration($duration)
-          ->setPath($this->sessionManager->getCookiePath())
+          ->setPath('/')
+          ->setSecure($this->storeManager->getStore()->isFrontUrlSecure())
           ->setDomain($this->sessionManager->getCookieDomain());
 
         $this->cookieManager->setPublicCookie(
@@ -75,7 +83,8 @@ class CookieManager
             $cookieName,
             $this->cookieMetadataFactory
                 ->createCookieMetadata()
-                ->setPath($this->sessionManager->getCookiePath())
+                ->setPath('/')
+                ->setSecure($this->storeManager->getStore()->isFrontUrlSecure())
                 ->setDomain($this->sessionManager->getCookieDomain())
         );
     }

@@ -59,6 +59,19 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         }
     }
 
+    public function insertIfRequired($productIds){
+        if (!is_array($productIds)) {
+            $productIds = [$productIds];
+        }
+        foreach ($productIds as $productId) {
+            $queueItem = $this->queueFactory->create()->getCollection()->addFieldToFilter('product_id', $productId)->getFirstItem();
+            if (!$queueItem->getId()){
+                $queueItem = $this->queueFactory->create();
+            }
+            $queueItem->setProductId($productId)->save();
+        }
+    }
+
     public function importProductsToSync() {
         // force UTC timezone
         $conn = $this->resourceConnection->getConnection();
@@ -120,6 +133,7 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         $connection->truncateTable($tableName);
     }
 
+    // Not used anywhere.
     public function queuePrimaryProductIdFor($productId) {
         $primaryProductId = $this->getPrimaryProductId($productId);
         if ($primaryProductId === false) {
@@ -133,6 +147,7 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         return $primaryProductId;
     }
 
+    // Call this function only through pagination. Will lead to SQL error if count($productIds) in large.
     public function insertPrimaryProducts($productIds){
         $productIds = implode(',', $productIds);
         $tagalysStores = $this->tagalysConfiguration->getStoresForTagalys(true);
@@ -144,7 +159,7 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         // find the attribute id for product visibility
         $visibilityAttr = $this->getProductVisibilityAttrId();
         $columnToJoin = $this->getResourceColumnToJoin();
-        // insert individually visible products
+        // insert all individually visible products from the given array
         $sql = "REPLACE $tq (product_id) SELECT DISTINCT cpe.entity_id FROM $cpe as cpe INNER JOIN $cpei as cpei ON cpe.{$columnToJoin} = cpei.{$columnToJoin} WHERE cpe.entity_id IN ($productIds) AND cpei.attribute_id = $visibilityAttr AND cpei.value IN (2,3,4) AND cpei.store_id IN ($tagalysStores);";
         $this->runSql($sql);
         // insert parent products of associated child products
