@@ -38,9 +38,6 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry,
         \Magento\CatalogInventory\Api\StockRegistryInterface $stockRegistry,
         \Magento\Framework\Pricing\PriceCurrencyInterface $priceCurrency,
-        \Magento\InventorySalesApi\Api\GetProductSalableQtyInterface $getProductSalableQty,
-        \Magento\InventorySalesApi\Api\IsProductSalableInterface $isProductSalableInterface,
-        \Magento\InventorySalesApi\Api\StockResolverInterface $stockResolver,
         \Magento\Framework\App\ProductMetadataInterface $productMetadata,
         \Magento\ConfigurableProduct\Model\Product\Type\Configurable $configurableProduct,
         \Magento\Framework\App\ResourceConnection $resourceConnection
@@ -69,9 +66,6 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         $this->indexerRegistry = $indexerRegistry;
         $this->stockRegistry = $stockRegistry;
         $this->priceCurrency = $priceCurrency;
-        $this->getProductSalableQty = $getProductSalableQty;
-        $this->isProductSalableInterface = $isProductSalableInterface;
-        $this->stockResolver = $stockResolver;
         $this->productMetadata = $productMetadata;
         $this->configurableProduct = $configurableProduct;
         $this->resourceConnection = $resourceConnection;
@@ -146,15 +140,14 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
             }, $product->getTypeInstance(true)->getConfigurableAttributesAsArray($product));
         }
         $storeId = $this->storeManager->getStore()->getId();
-        $readBooleanValuesViaDb = $this->tagalysConfiguration->getConfig('sync:read_boolean_attributes_via_db', true);
         $whitelistedAttributes = $this->tagalysConfiguration->getConfig('sync:whitelisted_product_attributes', true);
         foreach ($attributes as $attribute) {
             if($this->tagalysConfiguration->isAttributeField($attribute)) {
                 $shouldSyncAttribute = $this->tagalysConfiguration->shouldSyncAttribute($attribute, $whitelistedAttributes, $attributesToIgnore);
                 if($shouldSyncAttribute) {
                     $isBoolean = $attribute->getFrontendInput() == 'boolean';
-                    if ($isBoolean && $readBooleanValuesViaDb) {
-                        $productFields[$attribute->getAttributeCode()] = $this->getBooleanAttributeValueViaDb($storeId, $product->getId(), $attribute->getAttributeId());
+                    if($isBoolean) {
+                        $productFields[$attribute->getAttributeCode()] = $this->getBooleanAttributeValue($storeId, $product, $attribute);
                     } else {
                         $attributeValue = $attribute->getFrontend()->getValue($product);
                         if (!is_null($attributeValue)) {
@@ -169,6 +162,20 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
             }
         }
         return $productFields;
+    }
+
+    public function getBooleanAttributeValue($storeId, $product, $attribute) {
+        $readBooleanValuesViaDb = $this->tagalysConfiguration->getConfig('sync:read_boolean_attributes_via_db', true);
+        if($readBooleanValuesViaDb) {
+            return $this->getBooleanAttributeValueViaDb($storeId, $product->getId(), $attribute->getAttributeId());
+        }
+        $newMethod = $this->tagalysConfiguration->getConfig('temp:read_boolean_attributes_with_new_method', true);
+        if($newMethod) {
+            $attributeValue = $product->getAttributeText($attribute->getAttributeCode());
+        } else {
+            $attributeValue = $attribute->getFrontend()->getValue($product);
+        }
+        return ($attributeValue == 'Yes');
     }
 
     public function getBooleanAttributeValueViaDb($storeId, $productId, $attributeId) {
@@ -629,15 +636,19 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
     }
 
     public function getSimpleProductInventoryDetails($product, $stockItem = false) {
-        if($product->getTypeId() == 'simple') {
+        if($product->getTypeId() == 'simple' || $product->getTypeId() == 'virtual') {
             $magentoVersion = $this->productMetadata->getVersion();
             $msiUsed = $this->tagalysConfiguration->getConfig('sync:multi_source_inventory_used', true);
             if(version_compare($magentoVersion, '2.3.0', '>=') && $msiUsed) {
                 // only do this if MSI is used, coz the else part will work for non MSI stores and is faster too.
                 $websiteCode = $this->storeManager->getWebsite()->getCode();
-                $stockId = $this->stockResolver->execute(\Magento\InventorySalesApi\Api\Data\SalesChannelInterface::TYPE_WEBSITE, $websiteCode)->getStockId();
-                $stockQty = $this->getProductSalableQty->execute($product->getSku(), $stockId);
-                $inStock = $this->isProductSalableInterface->execute($product->getSku(), $stockId);
+                $stockResolver = Configuration::getInstanceOf("\Magento\InventorySalesApi\Api\StockResolverInterface");
+                $isProductSalableInterface = Configuration::getInstanceOf("\Magento\InventorySalesApi\Api\IsProductSalableInterface");
+                $getProductSalableQty = Configuration::getInstanceOf("\Magento\InventorySalesApi\Api\GetProductSalableQtyInterface");
+                $stockId = $stockResolver->execute(\Magento\InventorySalesApi\Api\Data\SalesChannelInterface::TYPE_WEBSITE, $websiteCode)->getStockId();
+
+                $stockQty = $getProductSalableQty->execute($product->getSku(), $stockId);
+                $inStock = $isProductSalableInterface->execute($product->getSku(), $stockId);
             } else {
                 if($stockItem == false) {
                     $stockItem = $this->stockRegistry->getStockItem($product->getId());
@@ -712,6 +723,25 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
     private function runSqlSelect($sql){
         $conn = $this->resourceConnection->getConnection();
         return $conn->fetchAll($sql);
+    }
+
+    public function getBooleanAttrValueForAPI($storeId, $productId){
+        $product = $this->productFactory->create()->load($storeId, $productId);
+        return $this->tagalysConfiguration->processInStoreContext($storeId, function() use($storeId, $product) {
+            $attributes = $product->getTypeInstance()->getEditableAttributes($product);
+            $attributeValue = [];
+            foreach ($attributes as $attribute) {
+                $shouldSyncAttribute = $this->tagalysConfiguration->shouldSyncAttribute($attribute);
+                if ($shouldSyncAttribute && $attribute->getFrontendInput() == 'boolean') {
+                    $attributeValue[$attribute->getAttributeCode()] = [
+                        $attribute->getFrontend()->getValue($product),
+                        $product->getAttributeText($attribute->getAttributeCode()),
+                        $this->getBooleanAttributeValueViaDb($storeId, $product->getId(), $attribute->getAttributeId())
+                    ];
+                }
+            }
+            return $attributeValue;
+        });
     }
 
 }
