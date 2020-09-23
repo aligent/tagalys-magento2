@@ -99,6 +99,26 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
     public function getConfig($configPath, $jsonDecode = false) {
         $configValue = $this->configFactory->create()->load($configPath)->getValue();
         if ($configValue === NULL) {
+            $legacyPathMapping = [
+                "listing_pages:allow_reindex_for_mcc" => "listing_pages:reindex_category_product_after_updates",
+                "listing_pages:allow_cache_clear_for_mcc" => "listing_pages:clear_cache_after_reindex",
+                "listing_pages:allow_reindex_for_tcc" => "listing_pages:reindex_category_product_after_updates",
+                "listing_pages:allow_cache_clear_for_tcc" => "listing_pages:clear_cache_after_reindex",
+                "listing_pages:update_position_via_db_for_mcc" => "listing_pages:update_position_via_db",
+                "listing_pages:update_position_via_db_for_tcc" => "listing_pages:update_smart_category_products_via_db"
+            ];
+            if (array_key_exists($configPath, $legacyPathMapping)) {
+                $configValue = $this->configFactory->create()->load($legacyPathMapping[$configPath])->getValue();
+                if ($configValue !== NULL) {
+                    $this->setConfig($configPath, $configValue);
+                }
+            }
+        }
+        if ($configValue === NULL) {
+            /* Key:
+                mcc -> magento created category
+                tcc -> tagalys created category
+            */
             $defaultConfigValues = array(
                 'setup_status' => 'api_credentials',
                 'search_box_selector' => '#search',
@@ -124,11 +144,13 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
                 'integration_permissions' => '["Tagalys_Sync::tagalys"]',
                 'product_update_detection_methods' => '["events"]',
                 'use_optimized_product_updated_at' => 'true',
-                'listing_pages:clear_cache_after_reindex' => 'false',
-                'listing_pages:reindex_category_product_after_updates' => 'false',
+                'listing_pages:allow_reindex_for_mcc' => 'false',
+                'listing_pages:allow_cache_clear_for_mcc' => 'false',
+                'listing_pages:allow_reindex_for_tcc' => 'true',
+                'listing_pages:allow_cache_clear_for_tcc' => 'true',
                 'listing_pages:reindex_category_flat_after_updates' => 'false',
-                'listing_pages:update_position_via_db' => 'false',
-                'listing_pages:update_smart_category_products_via_db' => 'true',
+                'listing_pages:update_position_via_db_for_mcc' => 'false',
+                'listing_pages:update_position_via_db_for_tcc' => 'true',
                 'listing_pages:update_position_async' => 'true',
                 'listing_pages:consider_multi_store_during_position_updates' => 'true',
                 'sync:reindex_products_before_updates' => 'false',
@@ -914,5 +936,29 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         $res = $callback();
         $this->storeManager->setCurrentStore($originalStoreId);
         return $res;
+    }
+
+    public function isReindexAllowed($categoryType = Category::PLATFORM_CREATED) {
+        switch($categoryType) {
+            case Category::PLATFORM_CREATED:
+                return $this->getConfig('listing_pages:allow_reindex_for_mcc', true);
+            break;
+            case Category::TAGALYS_CREATED:
+                return $this->getConfig('listing_pages:allow_reindex_for_tcc', true);
+            break;
+        }
+        return false;
+    }
+
+    public function isCacheClearAllowed($categoryType = Category::PLATFORM_CREATED) {
+        switch($categoryType) {
+            case Category::PLATFORM_CREATED:
+                return $this->getConfig('listing_pages:allow_cache_clear_for_mcc', true);
+            break;
+            case Category::TAGALYS_CREATED:
+                return $this->getConfig('listing_pages:allow_cache_clear_for_tcc', true);
+            break;
+        }
+        return false;
     }
 }

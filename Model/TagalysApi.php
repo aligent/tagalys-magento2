@@ -12,6 +12,11 @@ class TagalysApi implements TagalysManagementInterface
      */
     private $tagalysProduct;
 
+    /**
+     * @param \Tagalys\Sync\Helper\Category
+     */
+    private $tagalysCategoryHelper;
+
     public function __construct(
         \Tagalys\Sync\Helper\Configuration $tagalysConfiguration,
         \Tagalys\Sync\Helper\Api $tagalysApi,
@@ -194,6 +199,11 @@ class TagalysApi implements TagalysManagementInterface
                     $this->tagalysCategoryHelper->clearCacheForCategories($params['category_ids']);
                     $response = ['status' => 'OK', 'message' => 'cleared'];
                     break;
+                case 'reindex_categories':
+                    $this->logger->info("clear_category_caches: params: " . json_encode($params));
+                    $res = $this->tagalysCategoryHelper->reindexCategoryProducts($params['category_ids'], '', true);
+                    $response = ['status' => 'OK', 'reindexed' => $res];
+                    break;
                 case 'get_plugin_version':
                     $response = ['status' => 'OK', 'plugin_version' => $this->tagalysApi->getPluginVersion()];
                     break;
@@ -282,13 +292,19 @@ class TagalysApi implements TagalysManagementInterface
                     }
                     $response = [
                         'status' => 'OK',
-                        'stores' => $this->tagalysConfiguration->getAllCategoriesForAPI($params['store_id'], $params['include_tagalys_created'], $params['process_ancestry'])
+                        'categories' => $this->tagalysConfiguration->getAllCategoriesForAPI($params['store_id'], $params['include_tagalys_created'], $params['process_ancestry'])
                     ];
                     break;
                 case 'get_bool_attr_value':
                     $response = [
                         'status' => 'OK',
                         'values' => $this->tagalysProduct->getBooleanAttrValueForAPI($params['store_id'], $params['product_id'])
+                    ];
+                    break;
+                case 'get_id_by_sku':
+                    $response = [
+                        'status' => 'OK',
+                        'ids' => $this->tagalysProduct->getIdsBySku($params['skus'])
                     ];
                     break;
             }
