@@ -17,6 +17,11 @@ class TagalysApi implements TagalysManagementInterface
      */
     private $tagalysCategoryHelper;
 
+    /**
+     * @param \Magento\Catalog\Model\ProductFactory
+     */
+    private $productFactory;
+
     public function __construct(
         \Tagalys\Sync\Helper\Configuration $tagalysConfiguration,
         \Tagalys\Sync\Helper\Api $tagalysApi,
@@ -27,7 +32,8 @@ class TagalysApi implements TagalysManagementInterface
         \Tagalys\Sync\Model\CategoryFactory $tagalysCategoryFactory,
         \Magento\Framework\Filesystem $filesystem,
         \Tagalys\Sync\Helper\Product $tagalysProduct,
-        \Magento\Framework\Registry $_registry
+        \Magento\Framework\Registry $_registry,
+        \Magento\Catalog\Model\ProductFactory $productFactory
     ) {
         $this->tagalysConfiguration = $tagalysConfiguration;
         $this->tagalysApi = $tagalysApi;
@@ -39,6 +45,7 @@ class TagalysApi implements TagalysManagementInterface
         $this->filesystem = $filesystem;
         $this->tagalysProduct = $tagalysProduct;
         $this->_registry = $_registry;
+        $this->productFactory = $productFactory;
 
         $writer = new \Zend\Log\Writer\Stream(BP . '/var/log/tagalys_rest_api.log');
         $this->logger = new \Zend\Log\Logger();
@@ -94,7 +101,8 @@ class TagalysApi implements TagalysManagementInterface
                     foreach ($stores as $storeId) {
                         $productDetails['store-' . $storeId] = [];
                         foreach($params['product_ids'] as $pid) {
-                            $productDetailsForStore = (array) $this->tagalysProduct->productDetails($pid, $storeId);
+                            $product = $this->productFactory->create()->setStoreId($storeId)->load($pid);
+                            $productDetailsForStore = (array) $this->tagalysProduct->productDetails($product, $storeId);
                             $productDetails['store-' . $storeId][$pid] = $productDetailsForStore;
                         }
                     }
@@ -126,12 +134,14 @@ class TagalysApi implements TagalysManagementInterface
                     break;
                 case 'insert_into_sync_queue':
                     $this->tagalysApi->log('warn', 'Inserting into sync queue via API', array('product_ids' => $params['product_ids']));
-                    $this->queueHelper->insertUnique($params['product_ids']);
+                    $priority = array_key_exists('priority', $params) ? $params['priority'] : 0;
+                    $this->queueHelper->insertUnique($params['product_ids'], $priority);
                     $response = array('inserted' => true);
                     break;
                 case 'truncate_sync_queue':
                     $this->tagalysApi->log('warn', 'Truncating sync queue via API');
-                    $this->queueHelper->truncate();
+                    $preserve_priority_items = array_key_exists('preserve_priority_items', $params) ? $params['preserve_priority_items'] : true;
+                    $this->queueHelper->truncate($preserve_priority_items);
                     $response = array('truncated' => true);
                     break;
                 case 'mark_positions_sync_required_for_categories':
@@ -233,6 +243,10 @@ class TagalysApi implements TagalysManagementInterface
                     $this->tagalysConfiguration->setConfig($params['path'], $params['value'], $params['json_encode']);
                     $response = array('updated' => true, $params['value']);
                     break;
+                case 'update_config':
+                    $this->tagalysConfiguration->updateJsonConfig($params['path'], $params['value']);
+                    $response = array('updated' => true, $params['value']);
+                    break;
                 case 'get_order_data':
                     $res = $this->tagalysSync->getOrderData($params['store_id'], $params['from'], $params['to']);
                     $response = array('status' => 'OK', 'message' => $res);
@@ -256,7 +270,13 @@ class TagalysApi implements TagalysManagementInterface
                     $response = array('status' => 'OK', 'products' => $productIds);
                     break;
                 case 'remove_from_tagalys_queue':
-                    $res = $this->queueHelper->removeProductIdsIn($params['product_ids']);
+                    if (array_key_exists('product_ids', $params)){
+                        $res = $this->queueHelper->removeProductIdsIn($params['product_ids']);
+                    } else if (array_key_exists('priority', $params)) {
+                        $res = $this->queueHelper->removeProductIdsWithPriority($params['priority']);
+                    } else {
+                        $res = false;
+                    }
                     $response = array('status' => 'OK', 'removed' => $res);
                     break;
                 case 'get_positions':
@@ -307,6 +327,17 @@ class TagalysApi implements TagalysManagementInterface
                         'ids' => $this->tagalysProduct->getIdsBySku($params['skus'])
                     ];
                     break;
+
+                case 'delete_sync_files':
+                    $deletedAllFiles = (array_key_exists('delete_all', $params) && !!$params['delete_all']);
+                    if($deletedAllFiles) {
+                        $res = $this->tagalysSync->deleteAllSyncFiles();
+                    } else {
+                        $res = $this->tagalysSync->deleteSyncFiles($params['files']);
+                    }
+                    $response = ['status' => 'OK', 'deleted' => $res];
+                    break;
+
             }
         } catch (\Exception $e) {
             $response = ['status' => 'error', 'message' => $e->getMessage(), 'trace' => $e->getTrace()];

@@ -28,7 +28,7 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         $this->tagalysLogger->addWriter($writer);
     }
 
-    public function insertUnique($productIds) {
+    public function insertUnique($productIds, $priority = 0) {
         try {
             if (!is_array($productIds)) {
                 $productIds = array($productIds);
@@ -45,10 +45,13 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
             $productsToInsert = array_slice($productIds, $offset, $perPage);
             while(count($productsToInsert) > 0){
                 if($insertPrimary){
-                    $this->insertPrimaryProducts($productsToInsert);
+                    $this->insertPrimaryProducts($productsToInsert, $priority);
                 } else {
-                    $productsToInsert = implode('),(', $productsToInsert);
-                    $sql = "REPLACE $queueTable (product_id) VALUES ($productsToInsert);";
+                    $productsToInsert = array_map(function($productId) use ($priority) {
+                        return "($productId, $priority)";
+                    }, $productsToInsert);
+                    $values = implode(',', $productsToInsert);
+                    $sql = "REPLACE $queueTable (product_id, priority) VALUES $values;";
                     $this->runSql($sql);
                 }
                 $offset += $perPage;
@@ -126,14 +129,39 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         }
     }
 
-    public function truncate() {
+    // Todo: rename this function, it's not just truncating anymore
+    public function truncate($preserve_priority_items = true) {
+        if ($preserve_priority_items) {
+            $priorityRows = $this->getPriorityRows();
+        }
         $queue = $this->queueFactory->create();
         $connection = $queue->getResource()->getConnection();
         $tableName = $queue->getResource()->getMainTable();
         $connection->truncateTable($tableName);
+        if ($preserve_priority_items) {
+            $this->insertRows($priorityRows);
+        }
     }
 
-    // Not used anywhere.
+    public function getPriorityRows() {
+        $collection = $this->queueFactory->create()->getCollection()->addFieldToFilter('priority', ['gt' => 0])->setOrder('priority', 'desc');
+        $productIds = array_map(function($item){
+            $productId = $item['product_id'];
+            $priority = $item['priority'];
+            return "($productId, $priority)";
+        }, $collection->toArray(['product_id', 'priority'])['items']);
+        return $productIds;
+    }
+
+    public function insertRows($rows) {
+        $queueTable = $this->resourceConnection->getTableName('tagalys_queue');
+        Utils::forEachChunk($rows, 500, function($rowsToInsert) use ($queueTable){
+            $values = implode(',', $rowsToInsert);
+            $sql = "REPLACE $queueTable (product_id, priority) VALUES $values;";
+            $this->runSql($sql);
+        });
+    }
+
     public function queuePrimaryProductIdFor($productId) {
         $primaryProductId = $this->getPrimaryProductId($productId);
         if ($primaryProductId === false) {
@@ -148,7 +176,7 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
     }
 
     // Call this function only through pagination. Will lead to SQL error if count($productIds) in large.
-    public function insertPrimaryProducts($productIds){
+    public function insertPrimaryProducts($productIds, $priority = 0){
         $productIds = implode(',', $productIds);
         $tagalysStores = $this->tagalysConfiguration->getStoresForTagalys(true);
         $tagalysStores = implode(',', $tagalysStores);
@@ -160,10 +188,10 @@ class Queue extends \Magento\Framework\App\Helper\AbstractHelper
         $visibilityAttr = $this->getProductVisibilityAttrId();
         $columnToJoin = $this->getResourceColumnToJoin();
         // insert all individually visible products from the given array
-        $sql = "REPLACE $tq (product_id) SELECT DISTINCT cpe.entity_id FROM $cpe as cpe INNER JOIN $cpei as cpei ON cpe.{$columnToJoin} = cpei.{$columnToJoin} WHERE cpe.entity_id IN ($productIds) AND cpei.attribute_id = $visibilityAttr AND cpei.value IN (2,3,4) AND cpei.store_id IN ($tagalysStores);";
+        $sql = "REPLACE $tq (product_id, priority) SELECT DISTINCT cpe.entity_id, $priority FROM $cpe as cpe INNER JOIN $cpei as cpei ON cpe.{$columnToJoin} = cpei.{$columnToJoin} WHERE cpe.entity_id IN ($productIds) AND cpei.attribute_id = $visibilityAttr AND cpei.value IN (2,3,4) AND cpei.store_id IN ($tagalysStores);";
         $this->runSql($sql);
         // insert parent products of associated child products
-        $sql = "REPLACE $tq (product_id) SELECT DISTINCT cpr.parent_id FROM $cpr as cpr WHERE cpr.child_id IN ($productIds);";
+        $sql = "REPLACE $tq (product_id, priority) SELECT DISTINCT cpr.parent_id, $priority FROM $cpr as cpr WHERE cpr.child_id IN ($productIds);";
         $this->runSql($sql);
     }
 

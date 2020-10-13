@@ -8,6 +8,8 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
 
     public $cachedCategoryNames = [];
 
+    public $cachedConfig = [];
+
     /**
      * @param \Magento\Framework\App\ProductMetadataInterface
      */
@@ -96,7 +98,10 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         }
     }
 
-    public function getConfig($configPath, $jsonDecode = false) {
+    public function getConfig($configPath, $jsonDecode = false, $useCache = false) {
+        if($useCache and array_key_exists($configPath, $this->cachedConfig)) {
+            return $this->cachedConfig[$configPath];
+        }
         $configValue = $this->configFactory->create()->load($configPath)->getValue();
         if ($configValue === NULL) {
             $legacyPathMapping = [
@@ -164,7 +169,8 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
                 'sync:multi_source_inventory_used' => 'false',
                 'sync:whitelisted_product_attributes' => '[]',
                 'stores_for_search' => '[]',
-                'sync:read_boolean_attributes_via_db' => 'false'
+                'sync:read_boolean_attributes_via_db' => 'false',
+                'cron_status' => '[]',
             );
             if (array_key_exists($configPath, $defaultConfigValues)) {
                 $configValue = $defaultConfigValues[$configPath];
@@ -173,7 +179,10 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
             }
         }
         if ($configValue !== NULL && $jsonDecode) {
-            return json_decode($configValue, true);
+            $configValue = json_decode($configValue, true);
+        }
+        if($useCache) {
+            $this->cachedConfig[$configPath] = $configValue;
         }
         return $configValue;
     }
@@ -316,7 +325,7 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         $selectedCategoryDetails = [];
         foreach ($tagalysCategories as $tagalysCategory) {
             $id = $tagalysCategory->getCategoryId();
-            $details = Configuration::findByKey('id', $id, $allCategoryDetails);
+            $details = Utils::findByKey('id', $id, $allCategoryDetails);
             if ($details) {
                 $selectedCategoryDetails[$id] = [
                     'id' => $id,
@@ -816,20 +825,6 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         return $attributeData;
     }
 
-    public static function getInstanceOf($class) {
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-        return $objectManager->create($class);
-    }
-
-    public static function findByKey($key, $value, $list) {
-        foreach($list as $item) {
-            if (array_key_exists($key, $item) && $item[$key] == $value) {
-                return $item;
-            }
-        }
-        return false;
-    }
-
     public function isTSearchEnabled($storeId) {
         $moduleEnabled = $this->isTagalysEnabledForStore($storeId, 'search');
         if($moduleEnabled){
@@ -888,7 +883,7 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
             ->addAttributeToFilter('path', array('like' => "1/{$rootCategoryId}/%"))
             ->addAttributeToSelect('*');
         if (!$includeTagalysCreated) {
-            $tagalysParentId = Configuration::getInstanceOf('Tagalys\Sync\Helper\Category')->getTagalysParentCategory($storeId);
+            $tagalysParentId = Utils::getInstanceOf('Tagalys\Sync\Helper\Category')->getTagalysParentCategory($storeId);
             $categories->addAttributeToFilter('path', array('nlike' => "1/{$rootCategoryId}/{$tagalysParentId}/%"));
         }
         return $categories;
@@ -931,10 +926,21 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
     }
 
     public function processInStoreContext($storeId, $callback) {
+        // set store
         $originalStoreId = $this->storeManager->getStore()->getId();
         $this->storeManager->setCurrentStore($storeId);
+        $store = $this->storeManager->getStore();
+
+        // set currency
+        $originalCurrency = $this->storeManager->getStore()->getCurrentCurrencyCode();
+        $store->setCurrentCurrencyCode($store->getBaseCurrencyCode());
+
         $res = $callback();
+
+        // reset both
         $this->storeManager->setCurrentStore($originalStoreId);
+        $this->storeManager->getStore()->setCurrentCurrencyCode($originalCurrency);
+
         return $res;
     }
 
@@ -960,5 +966,27 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
             break;
         }
         return false;
+    }
+
+    public function updateJsonConfig($path, $updateValue) {
+        $currentValue = $this->getConfig($path, true);
+        if ($currentValue !== NULL) {
+            $newValue = array_merge($currentValue, $updateValue);
+        } else {
+            $newValue = $updateValue;
+        }
+        $this->setConfig($path, $newValue, true);
+    }
+
+    public function getCronConfig() {
+        $defaultConfig = [
+            'sleep' => 30,
+            'sleep_every' => 1000
+        ];
+        $config = $this->getConfig("cron_config", true, true);
+        if ($config === NULL) {
+            return $defaultConfig;
+        }
+        return $config;
     }
 }
