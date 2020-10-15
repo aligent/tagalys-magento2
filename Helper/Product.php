@@ -451,7 +451,12 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
             $productDetails['__inventory_average'] = 0;
         }
 
-        $productDetails['in_stock'] = $anyAssociatedProductInStock;
+        $considerParenStockValue = $this->tagalysConfiguration->getConfig("sync:consider_parent_in_stock_value", true, true);
+        if($considerParenStockValue) {
+            $productDetails['in_stock'] =  ($productDetails['in_stock'] && $anyAssociatedProductInStock);
+        } else {
+            $productDetails['in_stock'] = $anyAssociatedProductInStock;
+        }
 
         // Reformat tag sets
         foreach($tagItems as $configurableAttribute => $items){
@@ -460,14 +465,13 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         return array('details' => $productDetails, 'product_for_price'=>$productForPrice);
     }
 
-    public function addPriceDetails($product, $productDetails)
-    {
+    public function addPriceDetails($product, $productDetails) {
         $store = $this->storeManager->getStore();
         $baseCurrency = $store->getBaseCurrencyCode();
         $allowedCurrencies = $store->getAvailableCurrencies(true);
         $baseCurrencyNotAllowed = ($allowedCurrencies == null || !in_array($baseCurrency, $allowedCurrencies));
         $productDetails['scheduled_updates'] = [];
-        if ($product->getTypeId() == 'bundle') {
+        if (Utils::isBundleProduct($product)) {
             // already returning price in base currency. no conversion needed.
             $productDetails['price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
             $productDetails['sale_price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
@@ -519,6 +523,9 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
                     }
                 }
             }
+        }
+        if(Utils::isGiftCard($product) && $productDetails['price'] == 0) {
+            $productDetails['price'] = $productDetails['sale_price'];
         }
         return $productDetails;
     }
@@ -636,17 +643,27 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         });
     }
 
+    public function isInStock($product) {
+        // does not consider MSI. Ok for now.
+        $useIsSaleable = $this->tagalysConfiguration->getConfig("sync:use_is_saleable_for_in_stock", true, true);
+        $inStock = $useIsSaleable ? $product->isSaleable() : $product->isAvailable();
+        if(Utils::isConfigurableProduct($product)) {
+            $considerParenStockValue = $this->tagalysConfiguration->getConfig("sync:consider_parent_in_stock_value", true, true);
+            if($considerParenStockValue) {
+                $inStock = ($inStock && $this->stockRegistry->getStockItem($product->getId())->getIsInStock());
+            }
+        }
+        return $inStock;
+    }
+
     public function getSelectiveProductDetails($storeId, $product) {
         return $this->tagalysConfiguration->processInStoreContext($storeId, function () use ($storeId, $product) {
 
             $productDetails = [
                 '__id' => $product->getId(),
                 '__magento_type' => $product->getTypeId(),
+                'in_stock' => $this->isInStock($product)
             ];
-
-            // does not consider MSI. Ok for now.
-            $useIsSaleable = $this->tagalysConfiguration->getConfig("sync:use_is_saleable_for_in_stock", true, true);
-            $productDetails['in_stock'] = $useIsSaleable ? $product->isSaleable() : $product->isAvailable();
 
             $productDetails = $this->addSyncedAtTime($productDetails);
             $productDetails = $this->addPriceDetails($product, $productDetails);

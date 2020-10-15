@@ -22,6 +22,16 @@ class TagalysApi implements TagalysManagementInterface
      */
     private $productFactory;
 
+    /**
+     * @param \Tagalys\Sync\Helper\Configuration
+     */
+    private $tagalysConfiguration;
+
+    /**
+     * @param \Tagalys\Sync\Helper\Sync
+     */
+    private $tagalysSync;
+
     public function __construct(
         \Tagalys\Sync\Helper\Configuration $tagalysConfiguration,
         \Tagalys\Sync\Helper\Api $tagalysApi,
@@ -76,33 +86,61 @@ class TagalysApi implements TagalysManagementInterface
         try {
             switch ($params['info_type']) {
                 case 'status':
-                    $info = array('config' => array(), 'files_in_media_folder' => array(), 'sync_status' => $this->tagalysSync->status());
+                    $info = array(
+                        'config' => [],
+                        'files_in_media_folder' => array(),
+                        'sync_status' => $this->tagalysSync->status()
+                    );
                     $configCollection = $this->configFactory->create()->getCollection()->setOrder('id', 'ASC');
                     foreach ($configCollection as $i) {
                         $info['config'][$i->getData('path')] = $i->getData('value');
                     }
-                    $mediaDirectory = $this->filesystem->getDirectoryRead('media')->getAbsolutePath('tagalys');
-                    $filesInMediaDirectory = scandir($mediaDirectory);
-                    foreach ($filesInMediaDirectory as $key => $value) {
-                        if (!is_dir($mediaDirectory . DIRECTORY_SEPARATOR . $value)) {
-                            if (!preg_match("/^\./", $value)) {
-                                $info['files_in_media_folder'][] = $value;
-                            }
+                    $this->tagalysSync->forEachFileInMediaFolder(function($path, $name) use (&$info) {
+                        $info['files_in_media_folder'][] = $name;
+                    });
+                    $response = $info;
+                    break;
+                case 'get_config':
+                    if (!array_key_exists('only_defaults', $params)) {
+                        $params['only_defaults'] = false;
+                    }
+                    if (!array_key_exists('include_defaults', $params)) {
+                        $params['include_defaults'] = true;
+                    }
+                    $response = [];
+                    if($params['only_defaults']) {
+                        $response = $this->tagalysConfiguration->defaultConfigValues;
+                    } else {
+                        if($params['include_defaults']) {
+                            $response = $this->tagalysConfiguration->defaultConfigValues;
+                        }
+                        $configCollection = $this->configFactory->create()->getCollection()->setOrder('id', 'ASC');
+                        foreach ($configCollection as $config) {
+                            $response[$config->getPath()] = $config->getValue();
                         }
                     }
-                    $response = $info;
                     break;
                 case 'product_details':
                     $productDetails = array();
                     if (array_key_exists('product_id', $params)) {
                         $params['product_ids'] = [$params['product_id']];
                     }
+                    if (!array_key_exists('selective', $params)) {
+                        $params['selective'] = false;
+                    }
+                    if (!array_key_exists('force_regenerate_thumbnail', $params)) {
+                        $params['force_regenerate_thumbnail'] = false;
+                    }
                     $stores = array_key_exists('stores', $params) ? $params['stores'] : $this->tagalysConfiguration->getStoresForTagalys();
                     foreach ($stores as $storeId) {
                         $productDetails['store-' . $storeId] = [];
                         foreach($params['product_ids'] as $pid) {
                             $product = $this->productFactory->create()->setStoreId($storeId)->load($pid);
-                            $productDetailsForStore = (array) $this->tagalysProduct->productDetails($product, $storeId);
+                            if($params['selective']) {
+                                $productDetailsForStore = (array) $this->tagalysProduct->getSelectiveProductDetails($storeId, $product);
+                            } else {
+                                $productDetailsForStore = (array) $this->tagalysProduct->productDetails($product, $storeId, $params['force_regenerate_thumbnail']);
+                            }
                             $productDetails['store-' . $storeId][$pid] = $productDetailsForStore;
                         }
                     }
