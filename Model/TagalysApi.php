@@ -187,8 +187,10 @@ class TagalysApi implements TagalysManagementInterface
                 case 'insert_into_sync_queue':
                     $this->tagalysApi->log('warn', 'Inserting into sync queue via API', array('product_ids' => $params['product_ids']));
                     $priority = array_key_exists('priority', $params) ? $params['priority'] : 0;
-                    $this->queueHelper->insertUnique($params['product_ids'], $priority);
-                    $response = array('inserted' => true);
+                    $insertPrimary = array_key_exists('insert_primary', $params) ? $params['insert_primary'] : null;
+                    $includeDeleted = array_key_exists('include_deleted', $params) ? $params['include_deleted'] : null;
+                    $res = $this->queueHelper->insertUnique($params['product_ids'], $priority, $insertPrimary, $includeDeleted);
+                    $response = array('inserted' => true, 'info' => $res);
                     break;
                 case 'truncate_sync_queue':
                     $this->tagalysApi->log('warn', 'Truncating sync queue via API');
@@ -323,13 +325,28 @@ class TagalysApi implements TagalysManagementInterface
                     break;
                 case 'remove_from_tagalys_queue':
                     if (array_key_exists('product_ids', $params)){
-                        $res = $this->queueHelper->removeProductIdsIn($params['product_ids']);
-                    } else if (array_key_exists('priority', $params)) {
-                        $res = $this->queueHelper->removeProductIdsWithPriority($params['priority']);
+                        $priority = array_key_exists('priority', $params) ? $params['priority'] : null;
+                        $res = $this->queueHelper->paginateSqlDelete($params['product_ids'], $priority);
                     } else {
                         $res = false;
                     }
                     $response = array('status' => 'OK', 'removed' => $res);
+                    break;
+                case 'remove_duplicates_from_tagalys_queue':
+                    $response = $this->queueHelper->removeDuplicatesFromQueue();
+                    break;
+                case 'get_relevant_product_ids':
+                    $includeDeleted = array_key_exists('include_deleted', $params) ? $params['include_deleted'] : false;
+                    $response = $this->queueHelper->getRelevantProductIds($params['product_ids'], $includeDeleted);
+                    break;
+                case 'delete_from_tagalys_queue_by_priority':
+                    if (array_key_exists('priority', $params)){
+                        $priority = $params['priority'];
+                        $this->queueHelper->deleteByPriority($priority);
+                        $response = ['deleted' => true, 'message' => "deleted rows with priority $priority"];
+                    } else {
+                        $response = ['message' => 'required param `priority` is missing'];
+                    }
                     break;
                 case 'get_positions':
                     $positions = $this->tagalysCategoryHelper->getProductPosition($params['category_id']);

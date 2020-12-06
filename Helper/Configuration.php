@@ -64,6 +64,10 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         'sync:trigger_quick_feed_for_catalog_price_rule_change' => 'false',
         'cron_status' => '[]',
         "sync:consider_parent_in_stock_value" => 'true',
+        'sync:include_deleted_products_in_insert_primary' => 'true',
+        'sync:max_products_per_cron' => '500',
+        'sync:feed_per_page' => '50',
+        'sync:threshold_to_abandon_updates_and_trigger_feed' => '1000',
     ];
 
     /**
@@ -154,6 +158,7 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         }
     }
 
+    // Note: Returns cached value when $useCache is true
     public function getConfig($configPath, $jsonDecode = false, $useCache = false) {
         if($useCache and array_key_exists($configPath, $this->cachedConfig)) {
             return $this->cachedConfig[$configPath];
@@ -203,6 +208,9 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
     }
 
     public function setConfig($configPath, $configValue, $jsonEncode = false) {
+        if(array_key_exists($configPath, $this->cachedConfig)) {
+            $this->cachedConfig[$configPath] = $configValue;
+        }
         if ($jsonEncode) {
             $configValue = json_encode($configValue);
         }
@@ -915,7 +923,9 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
                 'slug' => $category->getUrlKey(),
                 'path' => $category->getPath(),
                 'label' => $processAncestry ? $this->getCategoryName($category) : false,
-                'static_block_only' => ($category->getDisplayMode()=='PAGE')
+                'static_block_only' => ($category->getDisplayMode()=='PAGE'),
+                'include_in_menu' => ($category->getIncludeInMenu() === '1'),
+                'is_active' => ($category->getIsActive() === '1'),
             );
             if (array_key_exists($id, $tagalysPoweredCategories)) {
                 $categoryDetails['powered_by_tagalys'] = true;
@@ -972,10 +982,10 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
     public function isCacheClearAllowed($categoryType = Category::PLATFORM_CREATED) {
         switch($categoryType) {
             case Category::PLATFORM_CREATED:
-                return $this->getConfig('listing_pages:allow_cache_clear_for_mcc', true);
+                return $this->getConfig('listing_pages:allow_cache_clear_for_mcc', true, true);
             break;
             case Category::TAGALYS_CREATED:
-                return $this->getConfig('listing_pages:allow_cache_clear_for_tcc', true);
+                return $this->getConfig('listing_pages:allow_cache_clear_for_tcc', true, true);
             break;
         }
         return false;
