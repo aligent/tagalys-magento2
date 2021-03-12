@@ -68,6 +68,11 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         'sync:max_products_per_cron' => '500',
         'sync:feed_per_page' => '50',
         'sync:threshold_to_abandon_updates_and_trigger_feed' => '1000',
+        'sync:allow_parent_category_assignment_during_sync' => 'true',
+        'sync:use_min_total_prices_for_bundles' => 'true',
+        'fallback:use_old_method_to_get_bundle_prices' => 'false',
+        'sync:max_categories_per_cron' => '50',
+        'sync:categories_per_page' => '50',
     ];
 
     /**
@@ -736,8 +741,9 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
         return ($attribute->usesSource() && $attribute->getFrontendInput() != 'boolean');
     }
 
+    // Note: returns cached value from $cachedConfig
     public function isProductSortingReverse(){
-        return $this->getConfig('listing_pages:position_sort_direction') != 'asc';
+        return $this->getConfig('listing_pages:position_sort_direction', false, true) != 'asc';
     }
 
     public function isPrimaryStore($storeId){
@@ -1015,5 +1021,25 @@ class Configuration extends \Magento\Framework\App\Helper\AbstractHelper
 
     public function isTagalysHealthy() {
         return ($this->getConfig("tagalys:health") === '1');
+    }
+
+    public function isListingPagesEnabled() {
+        return ($this->getConfig("module:listingpages:enabled") != '0');
+    }
+
+    public function getPriorityUpdatesStatus($storeId) {
+        $status = $this->getConfig("store:$storeId:priority_updates_status", true);
+        if($status === NULL) {
+            $status = ['status' => 'sent_to_tagalys'];
+        }
+        return $status;
+    }
+
+    public function getQuickFeedStatus($storeId) {
+        $status = $this->getConfig("store:$storeId:quick_feed_status", true);
+        if($status === NULL) {
+            $status = ['status' => 'sent_to_tagalys'];
+        }
+        return $status;
     }
 }

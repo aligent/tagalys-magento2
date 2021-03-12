@@ -290,16 +290,19 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
             ->addFieldToFilter('marked_for_deletion', 0)
             ->count();
     }
-    public function getRequiresPositionsSyncCollection()
+    public function getRequiresPositionsSyncCollection($idsFilter = false)
     {
         $categoriesToSync = $this->tagalysCategoryFactory->create()->getCollection()
             ->addFieldToFilter('status', 'powered_by_tagalys')
             ->addFieldToFilter('positions_sync_required', 1)
             ->addFieldToFilter('marked_for_deletion', 0);
+        if($idsFilter != false) {
+            $categoriesToSync->addFieldToFilter('id', $idsFilter);
+        }
         return $categoriesToSync;
     }
 
-    public function updatePositionsIfRequired($maxProductsPerCronRun = 50, $perPage = 5, $force = false) {
+    public function updatePositionsIfRequired($force = false) {
         $this->_registry->register("tagalys_context", true);
         $listingPagesEnabled = ($this->tagalysConfiguration->getConfig("module:listingpages:enabled") != '0');
         if ($listingPagesEnabled || $force) {
@@ -314,14 +317,13 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
                     'locked_by' => $pid
                 );
                 $this->tagalysConfiguration->setConfig('categories_sync_status', $syncStatus, true);
-                $collection = $this->getRequiresPositionsSyncCollection();
-                $remainingCount = $collection->count();
-                $countToSyncInCronRun = min($remainingCount, $maxProductsPerCronRun);
-                $numberCompleted = 0;
-                $circuitBreaker = 0;
-                while ($numberCompleted < $countToSyncInCronRun && $circuitBreaker < 26) {
-                    $circuitBreaker += 1;
-                    $categoriesToSync = $this->getRequiresPositionsSyncCollection()->setPageSize($perPage);
+                $maxProductsPerCronRun = $this->tagalysConfiguration->getConfig('sync:max_categories_per_cron');
+                $collection = $this->getRequiresPositionsSyncCollection()->setPageSize($maxProductsPerCronRun);
+                $collectionIds = Utils::getAllIds($collection);
+                $perPage = $this->tagalysConfiguration->getConfig('sync:categories_per_page');
+                $perPage = min($perPage, $maxProductsPerCronRun);
+                Utils::forEachChunk($collectionIds, $perPage, function ($idsChunk) {
+                    $categoriesToSync = $this->getRequiresPositionsSyncCollection($idsChunk);
                     $utcNow = new \DateTime("now", new \DateTimeZone('UTC'));
                     $timeNow = $utcNow->format(\DateTime::ATOM);
                     $syncStatus['updated_at'] = $timeNow;
@@ -342,6 +344,8 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
                                 } else {
                                     $categoryToSync->addData(['positions_sync_required' => 0, 'marked_for_deletion' => 1])->save();
                                 }
+                            } else {
+                                $categoryToSync->setPositionsSyncRequired(0)->save();
                             }
                         } catch (\Throwable $e) {
                             $categoryToSync->setPositionsSyncRequired(0)->save();
@@ -355,8 +359,7 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
                             $this->tagalysApi->log('error', "Exception in updatePositionsIfRequired: category: $categoryId", $errorData);
                         }
                     }
-                    $numberCompleted += $categoriesToSync->count();
-                }
+                });
                 $syncStatus['locked_by'] = null;
                 $this->tagalysConfiguration->setConfig('categories_sync_status', $syncStatus, true);
             }
@@ -558,6 +561,10 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         $this->categoryLinkRepositoryInterface->save($categoryProductLink);
     }
     public function assignProductToCategoryViaDb($categoryId, $product){
+        $allowed = $this->tagalysConfiguration->getConfig("sync:allow_parent_category_assignment_during_sync", true, true);
+        if (!$allowed) {
+            return false;
+        }
         try {
             $this->logger->info("assignProductToCategoryViaDb: {$categoryId}");
             $conn = $this->resourceConnection->getConnection();
@@ -667,15 +674,17 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
         return true;
     }
 
-    public function _updatePositions($storeId, $categoryId, $newPositions, $pushDown) {
+    public function _updatePositions($storeId, $categoryId, $newPositions, $canPushDown) {
         $category = $this->categoryFactory->create()->setStoreId($storeId)->load($categoryId);
         $positions = $category->getProductsPosition();
         $productCount = count($positions);
         foreach ($positions as $productId => $position) {
             if (array_key_exists($productId, $newPositions)) {
                 $positions[$productId] = $newPositions[$productId];
-            } else {
-                if ($pushDown) {
+            } else if($canPushDown) {
+                if ($this->tagalysConfiguration->isProductSortingReverse()) {
+                    $positions[$productId] = 0;
+                } else {
                     $positions[$productId] = $productCount + 1;
                 }
             }
@@ -1283,5 +1292,21 @@ class Category extends \Magento\Framework\App\Helper\AbstractHelper
             $updateData = array_key_exists('update_data', $row) ? $row['update_data'] : false;
             $this->createOrUpdateWithData($row['store_id'], $row['category_id'], $row['data'], $updateData);
         }
+    }
+
+    public function markAsPositionSyncRequired($storeId, $categoryId) {
+        $this->updateWithData($storeId, $categoryId, ['positions_sync_required' => 1]);
+    }
+
+    public function markCategoryForDisable($categoryId) {
+        $categories = $this->tagalysCategoryFactory->create()->getCollection()->addFieldToFilter('category_id', $categoryId);
+        foreach($categories as $category) {
+            $category->setStatus('pending_disable')->save();
+        }
+    }
+
+    public function isPresentInTagalysCategoriesTable($categoryId) {
+        $categories = $this->tagalysCategoryFactory->create()->getCollection()->addFieldToFilter('category_id', $categoryId);
+        return ($categories->getSize() > 0);
     }
 }

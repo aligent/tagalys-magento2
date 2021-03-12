@@ -922,10 +922,10 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
 
     public function runQuickFeedIfRequired($stores) {
         foreach($stores as $storeId) {
-            $statusPath = "store:$storeId:quick_feed_status";
-            $quickFeedStatus = $this->tagalysConfiguration->getConfig($statusPath, true);
+            $quickFeedStatus = $this->tagalysConfiguration->getQuickFeedStatus($storeId);
             if($quickFeedStatus['status'] == 'scheduled') {
                 $fileName = $this->_getNewSyncFileName($storeId, self::QUICK_FEED);
+                $statusPath = "store:$storeId:quick_feed_status";
                 $this->tagalysConfiguration->setConfig($statusPath, [
                     'status' => 'processing',
                     'filename' => $fileName,
@@ -943,7 +943,7 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
                     }
                 }, $statusPath);
 
-                $quickFeedStatus = $this->tagalysConfiguration->getConfig($statusPath, true);
+                $quickFeedStatus = $this->tagalysConfiguration->getQuickFeedStatus($storeId);
                 $quickFeedStatus['status'] = 'generated_file';
                 $quickFeedStatus['took'] = strtotime($this->now()) - strtotime($quickFeedStatus['triggered_at']);
                 $this->tagalysConfiguration->setConfig($statusPath, $quickFeedStatus, true);
@@ -1013,7 +1013,7 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
 
     public function areAllUpdatesSentToTagalys($stores) {
         foreach($stores as $storeId) {
-            $updateStatus = $this->tagalysConfiguration->getConfig("store:$storeId:priority_updates_status", true);
+            $updateStatus = $this->tagalysConfiguration->getPriorityUpdatesStatus($storeId);
             if($updateStatus['status'] == 'generated_file') {
                 return false;
             }
@@ -1026,7 +1026,7 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
         if(!$areAllUpdatesSentToTagalys) {
             $areAllUpdatesSentToTagalys = true;
             foreach($stores as $storeId) {
-                $updateStatus = $this->tagalysConfiguration->getConfig("store:$storeId:priority_updates_status", true);
+                $updateStatus = $this->tagalysConfiguration->getPriorityUpdatesStatus($storeId);
                 if($updateStatus['status'] == 'generated_file') {
                     if(!$this->_sendFileToTagalys($storeId, self::PRIORITY_UPDATES, $updateStatus)) {
                         $areAllUpdatesSentToTagalys = false;
@@ -1117,5 +1117,19 @@ class Sync extends \Magento\Framework\App\Helper\AbstractHelper
             ]);
             $this->tagalysApi->log('warn', "Feed as been abandoned and marked as finished for store: $storeId");
         }
+    }
+
+    public function getProductIdsToRemove($storeId, $productIds) {
+        $idsToRemove = [];
+        Utils::forEachChunk($productIds, 1000, function($idsChunk) use ($storeId, &$idsToRemove) {
+            $collection = $this->_getCollection($storeId, 'updates', $idsChunk);
+            $idsToKeep = [];
+            foreach($collection as $product) {
+                $idsToKeep[] = $product->getId();
+            }
+            $idsToRemoveInThisBatch = array_diff($idsChunk, $idsToKeep);
+            $idsToRemove = array_merge($idsToRemove, $idsToRemoveInThisBatch);
+        });
+        return $idsToRemove;
     }
 }

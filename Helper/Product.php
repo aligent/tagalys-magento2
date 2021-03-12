@@ -473,8 +473,26 @@ class Product extends \Magento\Framework\App\Helper\AbstractHelper
         $productDetails['scheduled_updates'] = [];
         if (Utils::isBundleProduct($product)) {
             // already returning price in base currency. no conversion needed.
-            $productDetails['price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
-            $productDetails['sale_price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
+            $useMinTotalPricesForBundles = $this->tagalysConfiguration->getConfig('sync:use_min_total_prices_for_bundles', true, true);
+            $useOldMethodToGetBundlePriceValues = $this->tagalysConfiguration->getConfig('fallback:use_old_method_to_get_bundle_prices', true, true);
+            if ($useOldMethodToGetBundlePriceValues) {
+                if($useMinTotalPricesForBundles){
+                    $productDetails['price'] = $product->getPriceModel()->getTotalPrices($product, 'min', 1);
+                } else {
+                    $productDetails['price'] = $product->getPriceModel()->getTotalPrices($product, 'max', 1);
+                }
+                $productDetails['sale_price'] = $productDetails['price'];
+            } else {
+                $regularPriceModel = $product->getPriceInfo()->getPrice('regular_price');
+                $finalPriceModel = $product->getPriceInfo()->getPrice('final_price');
+                if($useMinTotalPricesForBundles){
+                    $productDetails['price'] = $regularPriceModel->getMinimalPrice()->getValue();
+                    $productDetails['sale_price'] = $finalPriceModel->getMinimalPrice()->getValue();
+                } else {
+                    $productDetails['price'] = $regularPriceModel->getMaximalPrice()->getValue();
+                    $productDetails['sale_price'] = $finalPriceModel->getMaximalPrice()->getValue();
+                }
+            }
         } else {
             $useNewMethodToGetPriceValues = $this->tagalysConfiguration->getConfig('sync:use_get_final_price_for_sale_price', true, true);
             if($useNewMethodToGetPriceValues){

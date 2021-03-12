@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<csp_whitelist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Csp:etc/csp_whitelist.xsd">
+    <policies>
+        <policy id="script-src">
+            <values>
+                <value id="cdnjs-js" type="host">https://cdnjs.cloudflare.com</value>
+            </values>
+            <values>
+                <value id="tagalys-frontend-js-common" type="host">https://d3htxdwqp62ai4.cloudfront.net</value>
+            </values>
+            <values>
+                <value id="tagalys-frontend-js-client-specific" type="host">http://d2r9py2hfy5mgp.cloudfront.net</value>
+            </values>
+            <values>
+                <value id="tagalys-dev-frontend-js-client-specific" type="host">http://d3fzz8zsf83ont.cloudfront.net</value>
+            </values>
+        </policy>
+        <policy id="style-src">
+            <values>
+                <value id="cdnjs-css" type="host">https://cdnjs.cloudflare.com</value>
+            </values>
+            <values>
+                <value id="tagalys-s3-css" type="host">https://tagalys-assets.s3-ap-southeast-1.amazonaws.com</value>
+            </values>
+            <values>
+                <value id="tagalys-s3-cdn-client-specific-css" type="host">https://d3htxdwqp62ai4.cloudfront.net</value>
+            </values>
+            <values>
+                <value id="bootstrapcdn-css" type="host">https://stackpath.bootstrapcdn.com</value>
+            </values>
+        </policy>
+        <policy id="img-src">
+            <values>
+                <value id="tagalys-images" type="host">https://www.tagalys.com</value>
+            </values>
+        </policy>
+        <policy id="connect-src">
+            <values>
+                <value id="tagalys-api-r1" type="host">https://api-r1.tagalys.com</value>
+            </values>
+            <values>
+                <value id="tagalys-api-r2" type="host">https://api-r2.tagalys.com</value>
+            </values>
+            <values>
+                <value id="tagalys-api-r3" type="host">https://api-r3.tagalys.com</value>
+            </values>
+            <values>
+                <value id="tagalys-api-r4" type="host">https://api-r4.tagalys.com</value>
+            </values>
+            <values>
+                <value id="tagalys-staging-api-r2" type="host">https://staging-api-r2.tagalys.com</value>
+            </values>
+        </policy>
+    </policies>
+</csp_whitelist>

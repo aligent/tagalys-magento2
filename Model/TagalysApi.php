@@ -32,6 +32,8 @@ class TagalysApi implements TagalysManagementInterface
      */
     private $tagalysSync;
 
+    private $haveSetTagalysContext = false;
+
     public function __construct(
         \Tagalys\Sync\Helper\Configuration $tagalysConfiguration,
         \Tagalys\Sync\Helper\Api $tagalysApi,
@@ -79,9 +81,16 @@ class TagalysApi implements TagalysManagementInterface
         return json_encode($response);
     }
 
+    private function setTagalysContext() {
+        if (!$this->haveSetTagalysContext) {
+            $this->_registry->register("tagalys_context", true);
+            $this->haveSetTagalysContext=true;
+        }
+    }
+
     public function info($params)
     {
-        $this->_registry->register("tagalys_context", true);
+        $this->setTagalysContext();
         $response = array('status' => 'error', 'message' => 'invalid info_type');
         try {
             switch ($params['info_type']) {
@@ -232,31 +241,45 @@ class TagalysApi implements TagalysManagementInterface
                     break;
                 case 'assign_products_to_category_and_remove':
                     $this->logger->info("assign_products_to_category_and_remove: params: " . json_encode($params));
-                    $async = $this->tagalysConfiguration->getConfig('listing_pages:update_position_async', true);
-                    $res = $this->tagalysCategoryHelper->updateWithData($params['store_id'], $params['category_id'], ['positions_sync_required' => 1]);
-                    if (!$async) {
+                    $listingPagesEnabled = $this->tagalysConfiguration->isListingPagesEnabled();
+                    $updatePositionAsync = $this->tagalysConfiguration->getConfig('listing_pages:update_position_async', true);
+                    $this->tagalysCategoryHelper->markAsPositionSyncRequired($params['store_id'], $params['category_id']);
+                    if ($listingPagesEnabled && !$updatePositionAsync) {
                         if ($params['product_positions'] == -1) {
                             $params['product_positions'] = [];
                         }
-                        $res = $this->tagalysCategoryHelper->bulkAssignProductsToCategoryAndRemove($params['store_id'], $params['category_id'], $params['product_positions']);
-                    }
-                    if ($res) {
-                        $response = ['status' => 'OK', 'message' => $res, 'async' => $async];
+                        $this->tagalysCategoryHelper->bulkAssignProductsToCategoryAndRemove($params['store_id'], $params['category_id'], $params['product_positions']);
+                        $async = false;
                     } else {
-                        $response = ['status' => 'error', 'message' => 'Unknown error occurred'];
+                        $async = true;
                     }
+                    $response = [
+                        'status' => 'OK',
+                        'async' => $async,
+                        'update_position_async' => $updatePositionAsync,
+                        'listing_pages_enabled' => $listingPagesEnabled,
+                    ];
                     break;
                 case 'update_product_positions':
                     $this->logger->info("update_product_positions: params: " . json_encode($params));
-                    $async = $this->tagalysConfiguration->getConfig('listing_pages:update_position_async', true);
-                    $this->tagalysCategoryHelper->updateWithData($params['store_id'], $params['category_id'], ['positions_sync_required' => 1]);
-                    if(!$async){
+                    $listingPagesEnabled = $this->tagalysConfiguration->isListingPagesEnabled();
+                    $updatePositionAsync = $this->tagalysConfiguration->getConfig('listing_pages:update_position_async', true);
+                    $this->tagalysCategoryHelper->markAsPositionSyncRequired($params['store_id'], $params['category_id']);
+                    if($listingPagesEnabled && !$updatePositionAsync){
                         if ($params['product_positions'] == -1) {
                             $params['product_positions'] = [];
                         }
                         $this->tagalysCategoryHelper->performCategoryPositionUpdate($params['store_id'], $params['category_id'], $params['product_positions']);
+                        $async = false;
+                    } else {
+                        $async = true;
                     }
-                    $response = ['status' => 'OK', 'message' => 'updated', 'async' => $async];
+                    $response = [
+                        'status' => 'OK',
+                        'async' => $async,
+                        'update_position_async' => $updatePositionAsync,
+                        'listing_pages_enabled' => $listingPagesEnabled,
+                    ];
                     break;
                 case 'clear_category_caches':
                     $this->logger->info("clear_category_caches: params: " . json_encode($params));
@@ -397,7 +420,6 @@ class TagalysApi implements TagalysManagementInterface
                         'ids' => $this->tagalysProduct->getIdsBySku($params['skus'])
                     ];
                     break;
-
                 case 'delete_sync_files':
                     $deletedAllFiles = (array_key_exists('delete_all', $params) && !!$params['delete_all']);
                     if($deletedAllFiles) {
@@ -407,7 +429,23 @@ class TagalysApi implements TagalysManagementInterface
                     }
                     $response = ['status' => 'OK', 'deleted' => $res];
                     break;
-
+                case 'bulk_ops':
+                    $response = ['results' => [] ];
+                    foreach($params['ops'] as $opParams) {
+                        if($opParams['info_type'] == 'bulk_ops') {
+                            $response = ['results' => false, 'message' => "info_type: bulk_ops not permitted as part of ops."];
+                            break;
+                        }
+                        $opResponse = json_decode($this->info($opParams));
+                        $response['results'][] = $opResponse;
+                    }
+                    break;
+                case 'get_products_to_remove':
+                    $productIds = $params['product_ids'];
+                    $storeId = $params['store_id'];
+                    $idsToRemove = $this->tagalysSync->getProductIdsToRemove($storeId, $productIds);
+                    $response = ['status' => 'OK', 'to_remove' => $idsToRemove];
+                    break;
             }
         } catch (\Exception $e) {
             $response = ['status' => 'error', 'message' => $e->getMessage(), 'trace' => $e->getTrace()];
